@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Synthetic ArrangeDesktop menu</title>
+  <desc id="desc">An invented dark macOS-style desktop with an ArrangeDesktop menu showing saved arrangements.</desc>
+  <defs><linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#17243b"/><stop offset="1" stop-color="#6b4269"/></linearGradient></defs>
+  <rect width="960" height="540" rx="22" fill="url(#bg)"/>
+  <rect x="0" y="0" width="960" height="36" rx="22" fill="#101522" opacity=".92"/>
+  <text x="24" y="24" fill="#fff" font-family="Arial" font-size="14" font-weight="700">Demo Desktop</text>
+  <text x="890" y="24" fill="#fff" font-family="Arial" font-size="18">⊞</text>
+  <rect x="555" y="54" width="350" height="360" rx="12" fill="#202735" stroke="#8b98ae" stroke-opacity=".55"/>
+  <text x="581" y="88" fill="#fff" font-family="Arial" font-size="18" font-weight="700">Arrange Desktop</text>
+  <text x="581" y="120" fill="#d8deea" font-family="Arial" font-size="14">Save current arrangement</text>
+  <line x1="575" y1="140" x2="885" y2="140" stroke="#647086"/>
+  <text x="581" y="174" fill="#fff" font-family="Arial" font-size="14" font-weight="700">Desktop Arrangements</text>
+  <text x="605" y="208" fill="#cbd6f3" font-family="Arial" font-size="14">Desk</text>
+  <text x="605" y="240" fill="#cbd6f3" font-family="Arial" font-size="14">Laptop</text>
+  <text x="605" y="272" fill="#cbd6f3" font-family="Arial" font-size="14">Travel</text>
+  <line x1="575" y1="294" x2="885" y2="294" stroke="#647086"/>
+  <text x="581" y="328" fill="#d8deea" font-family="Arial" font-size="14">Delete Arrangement</text>
+  <rect x="52" y="94" width="420" height="255" rx="12" fill="#f3f6fb" opacity=".92"/>
+  <rect x="70" y="120" width="185" height="95" rx="7" fill="#d6e4f6"/><rect x="269" y="120" width="185" height="95" rx="7" fill="#d9d0ef"/>
+  <rect x="70" y="232" width="384" height="90" rx="7" fill="#d6f0dc"/>
+  <text x="72" y="390" fill="#fff" font-family="Arial" font-size="16">Synthetic illustration — no real desktop captured</text>
+</svg>

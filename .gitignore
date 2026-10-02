@@ -1,0 +1,11 @@
+# Personal desktop state: display UUIDs, coordinates, and app names vary by Mac.
+Spoons/ArrangeDesktop.spoon/config.json
+
+# macOS and editor metadata.
+.DS_Store
+.idea/
+.vscode/
+
+# Local Hammerspoon logs and temporary files.
+*.log
+*.tmp

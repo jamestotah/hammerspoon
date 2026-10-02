@@ -1,0 +1,21 @@
+{
+  "Work": {
+    "DISPLAY-UUID-EXAMPLE": {
+      "Monitor Name": "External Display",
+      "apps": {
+        "Terminal": {
+          "x": 0,
+          "y": 0,
+          "w": 960,
+          "h": 900
+        },
+        "Code": {
+          "x": 960,
+          "y": 0,
+          "w": 960,
+          "h": 900
+        }
+      }
+    }
+  }
+}

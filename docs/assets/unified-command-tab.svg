@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Synthetic Unified Command-Tab overlay</title>
+  <desc id="desc">An invented dark switcher overlay containing application windows and browser tabs.</desc>
+  <defs><linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#24365b"/><stop offset="1" stop-color="#18202f"/></linearGradient></defs>
+  <rect width="960" height="540" rx="22" fill="url(#bg)"/>
+  <rect x="140" y="62" width="680" height="416" rx="16" fill="#141a27" fill-opacity=".97" stroke="#7c8ca8" stroke-opacity=".6"/>
+  <text x="170" y="103" fill="#fff" font-family="Arial" font-size="20" font-weight="700">Unified Command-Tab</text>
+  <text x="170" y="129" fill="#aeb9cc" font-family="Arial" font-size="12">2 of 5  •  Tab to continue  •  release Command to choose</text>
+  <rect x="154" y="147" width="652" height="55" rx="8" fill="#356bd8"/>
+  <rect x="154" y="211" width="652" height="55" rx="8" fill="#fff" fill-opacity=".07"/>
+  <rect x="154" y="275" width="652" height="55" rx="8" fill="#fff" fill-opacity=".07"/>
+  <rect x="154" y="339" width="652" height="55" rx="8" fill="#fff" fill-opacity=".07"/>
+  <rect x="154" y="403" width="652" height="55" rx="8" fill="#fff" fill-opacity=".07"/>
+  <text x="174" y="181" fill="#fff" font-family="Arial" font-size="18">▶</text>
+  <text x="208" y="173" fill="#fff" font-family="Arial" font-size="14" font-weight="700">Dia</text><text x="208" y="191" fill="#dce6ff" font-family="Arial" font-size="12">Project notes — synthetic tab</text>
+  <text x="208" y="237" fill="#fff" font-family="Arial" font-size="14" font-weight="700">Google Chrome</text><text x="208" y="255" fill="#aeb9cc" font-family="Arial" font-size="12">Documentation — synthetic tab</text>
+  <text x="208" y="301" fill="#fff" font-family="Arial" font-size="14" font-weight="700">Code</text><text x="208" y="319" fill="#aeb9cc" font-family="Arial" font-size="12">hammerspoon / init.lua</text>
+  <text x="208" y="365" fill="#fff" font-family="Arial" font-size="14" font-weight="700">Terminal</text><text x="208" y="383" fill="#aeb9cc" font-family="Arial" font-size="12">zsh — synthetic window</text>
+  <text x="208" y="429" fill="#fff" font-family="Arial" font-size="14" font-weight="700">Spokenly</text><text x="208" y="447" fill="#aeb9cc" font-family="Arial" font-size="12">Voice input — synthetic window</text>
+</svg>
