@@ -14,6 +14,7 @@ local SETTINGS_KEY = "unifiedCmdTab.enabled"
 -- Browser state comes from AppleScript, which is relatively expensive. Run it
 -- out of process and at a human-scale cadence so it never blocks key events.
 local POLL_INTERVAL = 0.50
+local BROWSER_METADATA_INTERVAL = 1.50
 local MAX_HISTORY = 100
 
 local BROWSERS = {
@@ -55,6 +56,9 @@ local overlayVisible = false
 local enabled = true
 local browserReadTask = nil
 local browserMetadataReadTask = nil
+local lastBrowserMetadataReadAt = 0
+local browserMetadataGeneration = 0
+local browserMetadataReadGeneration = 0
 local scheduleOverlayUpdate
 local finishCycle
 
@@ -259,7 +263,7 @@ local function parseBrowserTarget(browser, result)
     return {
         kind = "browserTab",
         browser = browser,
-        key = "browserTab:" .. browser.appID .. ":" .. windowID .. ":" .. tabID,
+        key = "browserTab:" .. browser.appID .. ":" .. tabID,
         windowID = windowID,
         tabID = tabID,
         tabIndex = tonumber(tabIndex),
@@ -303,10 +307,11 @@ end tell
 end
 
 local function refreshBrowserMetadata(browser, result)
-    if type(result) ~= "string" or result == "" then
+    if type(result) ~= "string" then
         return
     end
 
+    local seenTabs = {}
     for line in result:gmatch("[^\r\n]+") do
         local windowID, tabID, tabIndex, title
         if browser.mode == "chrome" then
@@ -315,20 +320,15 @@ local function refreshBrowserMetadata(browser, result)
             windowID, tabID, title = line:match("^([^|]+)|([^|]+)|(.*)$")
         end
 
-        if windowID and tabID and title and title ~= "" then
-            local key = "browserTab:" .. browser.appID .. ":" .. windowID .. ":" .. tabID
-            for _, target in ipairs(history) do
-                if target.key == key then
-                    target.title = title
-                    if browser.mode == "chrome" then
-                        target.tabIndex = tonumber(tabIndex) or target.tabIndex
-                    end
-                end
-            end
-
-            if cycle then
-                for _, target in ipairs(cycle.order) do
-                    if target.key == key then
+        if windowID and tabID then
+            -- Tab IDs remain stable when a tab moves to another window. Keep
+            -- windowID as target metadata for focusing, not as tab identity.
+            local key = "browserTab:" .. browser.appID .. ":" .. tabID
+            seenTabs[key] = true
+            local function refreshTarget(target)
+                if target and target.key == key then
+                    target.windowID = windowID
+                    if title and title ~= "" then
                         target.title = title
                         if browser.mode == "chrome" then
                             target.tabIndex = tonumber(tabIndex) or target.tabIndex
@@ -337,17 +337,72 @@ local function refreshBrowserMetadata(browser, result)
                 end
             end
 
-            if lastObservedTarget and lastObservedTarget.key == key then
-                lastObservedTarget.title = title
+            for _, target in ipairs(history) do
+                refreshTarget(target)
+            end
+
+            if cycle then
+                for _, target in ipairs(cycle.order) do
+                    refreshTarget(target)
+                end
+            end
+
+            refreshTarget(lastObservedTarget)
+        end
+    end
+
+    -- The metadata response is a complete snapshot for this browser. The
+    -- active-tab poll cannot detect a closed background tab, so remove any
+    -- history entries whose stable tab IDs are no longer present.
+    forgetTargets(function(target)
+        return target.kind == "browserTab"
+            and target.browser
+            and target.browser.appID == browser.appID
+            and not seenTabs[target.key]
+    end)
+
+    if cycle then
+        local selectedKey = cycle.selected and cycle.selected.key
+        local oldIndex = cycle.index
+        local remaining = {}
+        for _, target in ipairs(cycle.order) do
+            if target.kind ~= "browserTab"
+                or not target.browser
+                or target.browser.appID ~= browser.appID
+                or seenTabs[target.key] then
+                table.insert(remaining, target)
+            end
+        end
+        cycle.order = remaining
+
+        if #remaining == 0 then
+            cycle.index = 0
+            cycle.selected = nil
+        else
+            cycle.index = math.min(oldIndex, #remaining)
+            cycle.selected = remaining[cycle.index]
+            if selectedKey then
+                for index, target in ipairs(remaining) do
+                    if target.key == selectedKey then
+                        cycle.index = index
+                        cycle.selected = target
+                        break
+                    end
+                end
             end
         end
     end
 end
 
 local function refreshBrowserMetadataAsync()
-    if browserMetadataReadTask or not cycle then
+    if browserMetadataReadTask then
         return
     end
+
+    lastBrowserMetadataReadAt = hs.timer.secondsSinceEpoch()
+    browserMetadataGeneration = browserMetadataGeneration + 1
+    browserMetadataReadGeneration = browserMetadataReadGeneration + 1
+    local readGeneration = browserMetadataReadGeneration
 
     local activeApp = hs.application.frontmostApplication()
     local activeBrowser = browserForApplication(activeApp)
@@ -363,8 +418,7 @@ local function refreshBrowserMetadataAsync()
 
     local browserIndex = 1
     local function readNextBrowser()
-        if not cycle then
-            browserMetadataReadTask = nil
+        if readGeneration ~= browserMetadataReadGeneration then
             return
         end
 
@@ -376,10 +430,16 @@ local function refreshBrowserMetadataAsync()
         end
 
         browserMetadataReadTask = hs.task.new("/usr/bin/osascript", function(exitCode, stdOut)
+            if readGeneration ~= browserMetadataReadGeneration then
+                return true
+            end
             browserMetadataReadTask = nil
             if exitCode == 0 then
                 refreshBrowserMetadata(browser, stdOut)
-                scheduleOverlayUpdate()
+                browserMetadataGeneration = browserMetadataGeneration + 1
+                if cycle then
+                    scheduleOverlayUpdate()
+                end
             end
             readNextBrowser()
             return true
@@ -1048,13 +1108,21 @@ function obj:start()
             return
         end
 
+        if hs.timer.secondsSinceEpoch() - lastBrowserMetadataReadAt >= BROWSER_METADATA_INTERVAL then
+            refreshBrowserMetadataAsync()
+        end
+
         local app = hs.application.frontmostApplication()
         local browser = browserForApplication(app)
         if browser then
+            local metadataGeneration = browserMetadataGeneration
             readBrowserTargetAsync(browser, function(target)
                 -- The async result may arrive after focus changed.
                 local currentApp = hs.application.frontmostApplication()
-                if not cycle and enabled and browserForApplication(currentApp) == browser then
+                if not cycle
+                    and enabled
+                    and metadataGeneration == browserMetadataGeneration
+                    and browserForApplication(currentApp) == browser then
                     observe(target)
                 end
             end)
@@ -1119,6 +1187,7 @@ function obj:start()
 end
 
 function obj:stop()
+    browserMetadataReadGeneration = browserMetadataReadGeneration + 1
     if eventTap then
         eventTap:stop()
         eventTap = nil
