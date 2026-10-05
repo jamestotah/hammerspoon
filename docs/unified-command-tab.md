@@ -9,13 +9,13 @@ one most-recently-used history. It is implemented in
 | Target | Identity tracked | Selection mechanism |
 | --- | --- | --- |
 | Ordinary app window | Bundle ID + window ID | Focus the window |
-| Google Chrome tab | Window ID + tab ID | Activate the window and tab index |
-| Dia tab | Window ID + tab ID | Use Dia's `focus tab` AppleScript command |
+| Google Chrome tab | Browser + tab ID | Activate the window and tab index |
+| Dia tab | Browser + tab ID | Use Dia's `focus tab` AppleScript command |
 | Spokenly | Application bundle ID | Activate the visible app |
 
-The history is capped at 100 entries. Closed windows and unavailable targets
-are pruned. Browser titles are refreshed asynchronously so the key event path
-does not block on AppleScript.
+The history is capped at 100 entries. Closed windows and browser tabs are
+pruned from periodic snapshots of each browser's open tabs. Browser titles are
+refreshed asynchronously so the key event path does not block on AppleScript.
 
 ## Keyboard behavior
 
