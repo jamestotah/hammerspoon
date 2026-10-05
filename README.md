@@ -1,4 +1,4 @@
-# James Tota's Hammerspoon configuration
+# James Totah's Hammerspoon configuration
 
 Personal macOS automation for restoring multi-monitor workspaces and making
 `⌘Tab` useful across applications and browser tabs.
