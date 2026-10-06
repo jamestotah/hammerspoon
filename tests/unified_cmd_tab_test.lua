@@ -8,14 +8,23 @@ local browserPoll
 local keyHandler
 local activeTabID = "tab-a"
 local activeWindowID = "window-1"
+local chromeRunning = true
+local diaRunning = false
 local testSourcePath = debug.getinfo(1, "S").source:sub(2)
 
 local chrome = { bundleID = function() return "com.google.Chrome" end }
+local dia = { bundleID = function() return "company.thebrowser.dia" end }
+local finder = { bundleID = function() return "com.apple.finder" end }
+local frontmostApp = chrome
 local mockHS = {
     settings = { get = function() return nil end },
     application = {
-        frontmostApplication = function() return chrome end,
-        get = function(id) return id == "com.google.Chrome" and chrome or nil end,
+        frontmostApplication = function() return frontmostApp end,
+        get = function(id)
+            if id == "com.google.Chrome" and chromeRunning then return chrome end
+            if id == "company.thebrowser.dia" and diaRunning then return dia end
+            return nil
+        end,
         watcher = {
             activated = "activated", launched = "launched", terminated = "terminated",
             new = function() return { start = function() end, stop = function() end } end,
@@ -71,19 +80,12 @@ local function completeTask(isMetadata, output)
 end
 
 local function finishMetadataIfRunning(chromeTabs)
-    local hasMetadataTask = false
+    completeTask(true, chromeTabs)
     for _, task in ipairs(tasks) do
-        if task.script:find("set records to {}", 1, true) then
-            hasMetadataTask = true
-            break
+        if task.script:find("company.thebrowser.dia", 1, true) then
+            error("metadata polling queried Dia while it was not running")
         end
     end
-    if not hasMetadataTask then
-        return
-    end
-
-    completeTask(true, chromeTabs)
-    completeTask(true, "") -- Dia has no tabs in this test.
 end
 
 local function pollActiveTab()
@@ -168,6 +170,17 @@ local ok, err = xpcall(function()
     -- A metadata completion delivered after stop must not continue the
     -- sequential browser-read chain or start another AppleScript task.
     now = 10
+    frontmostApp = finder
+    chromeRunning = false
+    browserPoll()
+    assert(#tasks == 0, "metadata polling queried Chrome after it quit")
+
+    -- Keep another browser running so the stop-callback check can verify that
+    -- a late Chrome completion does not continue the metadata-read chain.
+    frontmostApp = chrome
+    chromeRunning = true
+    diaRunning = true
+    now = 12
     browserPoll()
     local pendingMetadata
     for index, task in ipairs(tasks) do
