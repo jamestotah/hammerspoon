@@ -59,6 +59,11 @@ local browserMetadataReadTask = nil
 local lastBrowserMetadataReadAt = 0
 local browserMetadataGeneration = 0
 local browserMetadataReadGeneration = 0
+local pendingBrowserMetadataReads = {}
+local diaTabObserver = nil
+local diaTabObserverPID = nil
+local diaTabObserverRebindTimer = nil
+local diaTabObserverGeneration = 0
 local scheduleOverlayUpdate
 local finishCycle
 
@@ -306,6 +311,23 @@ end tell
 ]], quoteAppleScriptString(browser.appID))
 end
 
+local function browserTabPresenceReadScript(browser)
+    return string.format([[
+tell application id %s
+    set tabPresenceRecords to {}
+    repeat with theWindow in windows
+        set windowID to id of theWindow as text
+        set windowTabIDs to id of tabs of theWindow
+        repeat with tabID in windowTabIDs
+            set end of tabPresenceRecords to windowID & "|" & (tabID as text) & "|"
+        end repeat
+    end repeat
+    set AppleScript's text item delimiters to linefeed
+    return tabPresenceRecords as text
+end tell
+]], quoteAppleScriptString(browser.appID))
+end
+
 local function refreshBrowserMetadata(browser, result)
     if type(result) ~= "string" then
         return
@@ -394,28 +416,57 @@ local function refreshBrowserMetadata(browser, result)
     end
 end
 
-local function refreshBrowserMetadataAsync()
+local function refreshBrowserMetadataAsync(requestedBrowser, presenceOnly)
     if browserMetadataReadTask then
+        if requestedBrowser then
+            local pending = pendingBrowserMetadataReads[requestedBrowser.appID]
+            if not pending or (pending.presenceOnly and not presenceOnly) then
+                pendingBrowserMetadataReads[requestedBrowser.appID] = {
+                    browser = requestedBrowser,
+                    presenceOnly = presenceOnly,
+                }
+            end
+        end
         return
     end
 
-    lastBrowserMetadataReadAt = hs.timer.secondsSinceEpoch()
+    if not requestedBrowser then
+        lastBrowserMetadataReadAt = hs.timer.secondsSinceEpoch()
+    end
     browserMetadataGeneration = browserMetadataGeneration + 1
     browserMetadataReadGeneration = browserMetadataReadGeneration + 1
     local readGeneration = browserMetadataReadGeneration
 
-    local activeApp = hs.application.frontmostApplication()
-    local activeBrowser = browserForApplication(activeApp)
     local browsers = {}
-    if activeBrowser and hs.application.get(activeBrowser.appID) then
-        table.insert(browsers, activeBrowser)
+    if requestedBrowser then
+        if hs.application.get(requestedBrowser.appID) then
+            table.insert(browsers, requestedBrowser)
+        end
+    else
+        local activeApp = hs.application.frontmostApplication()
+        local activeBrowser = browserForApplication(activeApp)
+        if activeBrowser and hs.application.get(activeBrowser.appID) then
+            table.insert(browsers, activeBrowser)
+        end
+        for _, browser in pairs(BROWSERS) do
+            -- AppleScript's `tell application` launches a stopped app. Snapshot
+            -- only browsers that Hammerspoon reports as already running; the
+            -- application watcher removes history when a browser terminates.
+            if browser ~= activeBrowser and hs.application.get(browser.appID) then
+                table.insert(browsers, browser)
+            end
+        end
     end
-    for _, browser in pairs(BROWSERS) do
-        -- AppleScript's `tell application` launches a stopped app. Snapshot
-        -- only browsers that Hammerspoon reports as already running; the
-        -- application watcher removes history when a browser terminates.
-        if browser ~= activeBrowser and hs.application.get(browser.appID) then
-            table.insert(browsers, browser)
+
+    local function readPendingMetadata()
+        local pendingRefresh
+        for appID, refresh in pairs(pendingBrowserMetadataReads) do
+            pendingRefresh = refresh
+            pendingBrowserMetadataReads[appID] = nil
+            break
+        end
+        if pendingRefresh then
+            refreshBrowserMetadataAsync(pendingRefresh.browser, pendingRefresh.presenceOnly)
         end
     end
 
@@ -429,7 +480,14 @@ local function refreshBrowserMetadataAsync()
         browserIndex = browserIndex + 1
         if not browser then
             browserMetadataReadTask = nil
+            readPendingMetadata()
             return
+        end
+        -- A full snapshot may already be about to read the browser whose
+        -- notification was queued. That read satisfies the queued refresh.
+        local pendingRefresh = pendingBrowserMetadataReads[browser.appID]
+        if pendingRefresh and (not presenceOnly or not pendingRefresh.presenceOnly) then
+            pendingBrowserMetadataReads[browser.appID] = nil
         end
 
         browserMetadataReadTask = hs.task.new("/usr/bin/osascript", function(exitCode, stdOut)
@@ -438,6 +496,9 @@ local function refreshBrowserMetadataAsync()
             end
             browserMetadataReadTask = nil
             if exitCode == 0 then
+                -- Presence-only reads return the same window|tab|title shape,
+                -- with an empty title, so normal reconciliation prunes history
+                -- without waiting for the slower title refresh.
                 refreshBrowserMetadata(browser, stdOut)
                 browserMetadataGeneration = browserMetadataGeneration + 1
                 if cycle then
@@ -446,11 +507,147 @@ local function refreshBrowserMetadataAsync()
             end
             readNextBrowser()
             return true
-        end, { "-e", browserMetadataReadScript(browser) })
+        end, { "-e", presenceOnly
+            and browserTabPresenceReadScript(browser)
+            or browserMetadataReadScript(browser) })
         browserMetadataReadTask:start()
     end
 
     readNextBrowser()
+end
+
+local function diaAccessibilityAttribute(element, name)
+    local ok, value = pcall(function()
+        return element:attributeValue(name)
+    end)
+    if ok then
+        return value
+    end
+    return nil
+end
+
+local function diaTabListElements(app)
+    local lists = {}
+    local visited = {}
+    local budget = 3000
+
+    local function visit(element, depth)
+        if not element or depth > 16 or budget <= 0 then
+            return
+        end
+
+        local identity = tostring(element)
+        if visited[identity] then
+            return
+        end
+        visited[identity] = true
+        budget = budget - 1
+
+        local children = diaAccessibilityAttribute(element, "AXChildren") or {}
+        if diaAccessibilityAttribute(element, "AXRole") == "AXList" then
+            for _, child in ipairs(children) do
+                if diaAccessibilityAttribute(child, "AXIdentifier") == "tab" then
+                    table.insert(lists, element)
+                    break
+                end
+            end
+        end
+
+        for _, child in ipairs(children) do
+            visit(child, depth + 1)
+        end
+    end
+
+    for _, window in ipairs(app:allWindows()) do
+        local ok, root = pcall(hs.axuielement.windowElement, window)
+        if ok and root then
+            visit(root, 0)
+        end
+    end
+
+    return lists
+end
+
+local function stopDiaTabObserver()
+    diaTabObserverGeneration = diaTabObserverGeneration + 1
+    if diaTabObserverRebindTimer then
+        diaTabObserverRebindTimer:stop()
+        diaTabObserverRebindTimer = nil
+    end
+    if diaTabObserver then
+        pcall(function()
+            diaTabObserver:stop()
+        end)
+        diaTabObserver = nil
+        diaTabObserverPID = nil
+    end
+end
+
+local function ensureDiaTabObserver(forceRebind)
+    local app = hs.application.get(BROWSERS["company.thebrowser.dia"].appID)
+    if not app or not hs.axuielement or not hs.axuielement.observer then
+        if not app then
+            stopDiaTabObserver()
+        end
+        return
+    end
+
+    local pid = app:pid()
+    if diaTabObserver and diaTabObserverPID == pid and not forceRebind then
+        return
+    end
+
+    stopDiaTabObserver()
+    local generation = diaTabObserverGeneration
+    local ok, observer = pcall(hs.axuielement.observer.new, pid)
+    if not ok or not observer then
+        return
+    end
+
+    diaTabObserver = observer
+    diaTabObserverPID = pid
+    observer:callback(function(_, _, notification)
+        if not eventTap or not enabled or generation ~= diaTabObserverGeneration then
+            return
+        end
+
+        if notification == "AXSelectedChildrenChanged" then
+            -- Dia exposes its tab strip as an AXList and signals tab changes
+            -- on that list. Use the notification to prompt an authoritative
+            -- AppleScript snapshot; periodic polling remains the fallback.
+            refreshBrowserMetadataAsync(BROWSERS["company.thebrowser.dia"], true)
+        elseif notification == "AXWindowCreated" then
+            if diaTabObserverRebindTimer then
+                diaTabObserverRebindTimer:stop()
+            end
+            diaTabObserverRebindTimer = hs.timer.doAfter(0.1, function()
+                diaTabObserverRebindTimer = nil
+                if eventTap and generation == diaTabObserverGeneration then
+                    ensureDiaTabObserver(true)
+                end
+            end)
+        end
+    end)
+
+    local appElementOK, appElement = pcall(hs.axuielement.applicationElement, app)
+    if appElementOK and appElement then
+        pcall(function()
+            observer:addWatcher(appElement, "AXWindowCreated")
+        end)
+    end
+
+    for _, tabList in ipairs(diaTabListElements(app)) do
+        pcall(function()
+            observer:addWatcher(tabList, "AXSelectedChildrenChanged")
+        end)
+    end
+
+    local started = pcall(function()
+        observer:start()
+    end)
+    if not started then
+        stopDiaTabObserver()
+    end
 end
 
 local function readBrowserTargetAsync(browser, callback)
@@ -1068,6 +1265,10 @@ function obj:start()
         if cycle then
             return
         end
+        local app = window and window:application()
+        if app and app:bundleID() == BROWSERS["company.thebrowser.dia"].appID then
+            ensureDiaTabObserver()
+        end
         observe(targetForWindow(window))
     end)
     windowFilter:subscribe(hs.window.filter.windowDestroyed, function(window)
@@ -1091,6 +1292,9 @@ function obj:start()
     -- Keep this exception limited to explicitly allowlisted accessory apps.
     applicationWatcher = hs.application.watcher.new(function(appName, event)
         if event == hs.application.watcher.terminated then
+            if appName == BROWSERS["company.thebrowser.dia"].name then
+                stopDiaTabObserver()
+            end
             forgetTargets(function(target)
                 return target.appName == appName
                     or (target.browser and target.browser.name == appName)
@@ -1100,11 +1304,16 @@ function obj:start()
 
         if event == hs.application.watcher.activated
             or event == hs.application.watcher.launched then
-            observe(targetForSwitchableApplication(hs.application.get(appName)))
+            local app = hs.application.get(appName)
+            if app and app:bundleID() == BROWSERS["company.thebrowser.dia"].appID then
+                ensureDiaTabObserver()
+            end
+            observe(targetForSwitchableApplication(app))
         end
     end)
     applicationWatcher:start()
     observe(targetForSwitchableApplication(hs.application.get("app.spokenly")))
+    ensureDiaTabObserver()
 
     browserTimer = hs.timer.doEvery(POLL_INTERVAL, function()
         if cycle or not enabled then
@@ -1191,6 +1400,8 @@ end
 
 function obj:stop()
     browserMetadataReadGeneration = browserMetadataReadGeneration + 1
+    pendingBrowserMetadataReads = {}
+    stopDiaTabObserver()
     if eventTap then
         eventTap:stop()
         eventTap = nil
