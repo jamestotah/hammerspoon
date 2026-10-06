@@ -1,8 +1,10 @@
 # Unified Command-Tab
 
-The unified switcher makes application windows and selected browser tabs share
-one most-recently-used history. It is implemented in
-`unified_cmd_tab.lua` and started by `init.lua`.
+The `UnifiedCommandTab` Spoon makes application windows and selected browser
+tabs share one most-recently-used history. Its implementation is in
+`Spoons/UnifiedCommandTab.spoon/init.lua`; load and start it with
+`hs.loadSpoon("UnifiedCommandTab")` and
+`spoon.UnifiedCommandTab:start()`.
 
 ## Supported targets
 
@@ -56,7 +58,8 @@ target is activated exactly once when the modifier is released.
 ## Extending the switcher
 
 To add a browser or accessory application, update the allowlist near the top of
-`unified_cmd_tab.lua`, then implement its read and selection AppleScript paths.
+`Spoons/UnifiedCommandTab.spoon/init.lua`, then implement its read and selection
+AppleScript paths.
 Keep these rules intact:
 
 - never block the keyboard event callback with a browser query;

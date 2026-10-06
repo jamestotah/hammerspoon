@@ -26,8 +26,8 @@ See [the arrangement guide](docs/arrange-desktop.md) for the complete workflow.
 
 ### Unified Command-Tab
 
-`unified_cmd_tab.lua` replaces the native application-only switcher with a
-most-recently-used list containing:
+The `UnifiedCommandTab` Spoon replaces the native application-only switcher
+with a most-recently-used list containing:
 
 - ordinary application windows;
 - active tabs in Google Chrome;
@@ -64,11 +64,14 @@ permissions, troubleshooting, and extension points.
 ```text
 .
 ├── init.lua                              # Hammerspoon entry point
-├── unified_cmd_tab.lua                   # Cross-app/tab MRU switcher
+├── Spoons/UnifiedCommandTab.spoon/
+│   ├── init.lua                          # Cross-app/tab MRU switcher Spoon
+│   └── README.md                         # Standalone installation and API
 ├── Spoons/ArrangeDesktop.spoon/
 │   ├── init.lua                          # Vendored ArrangeDesktop Spoon
 │   ├── config.example.json               # Safe, portable layout example
 │   └── config.json                       # Local state; ignored by Git
+├── LICENSE                               # MIT license
 └── docs/
     ├── arrange-desktop.md
     └── unified-command-tab.md
@@ -86,7 +89,6 @@ are not captures of a real browser session or personal desktop.
 
 ## License and upstream attribution
 
-The root configuration and `unified_cmd_tab.lua` are personal work. The
-`ArrangeDesktop.spoon` directory retains its upstream attribution and MIT
-license metadata. If redistributing the Spoon independently, preserve that
-attribution.
+The root configuration is personal work. `UnifiedCommandTab.spoon` is MIT
+licensed. The `ArrangeDesktop.spoon` directory retains its upstream attribution
+and MIT license metadata.
