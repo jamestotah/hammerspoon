@@ -276,16 +276,16 @@ local function browserMetadataReadScript(browser)
         return string.format([[
 using terms from application "Google Chrome"
 tell application id %s
-    set records to {}
+    set tabRecords to {}
     repeat with theWindow in windows
         set windowID to (id of theWindow as text)
         repeat with i from 1 to (count of tabs of theWindow)
             set theTab to tab i of theWindow
-            set end of records to windowID & "|" & (id of theTab as text) & "|" & (i as text) & "|" & (title of theTab as text)
+            set end of tabRecords to windowID & "|" & (id of theTab as text) & "|" & (i as text) & "|" & (title of theTab as text)
         end repeat
     end repeat
     set AppleScript's text item delimiters to linefeed
-    return records as text
+    return tabRecords as text
 end tell
 end using terms from
 ]], quoteAppleScriptString(browser.appID))
@@ -293,15 +293,15 @@ end using terms from
 
     return string.format([[
 tell application id %s
-    set records to {}
+    set tabRecords to {}
     repeat with theWindow in windows
         set windowID to (id of theWindow as text)
         repeat with theTab in tabs of theWindow
-            set end of records to windowID & "|" & (id of theTab as text) & "|" & (title of theTab as text)
+            set end of tabRecords to windowID & "|" & (id of theTab as text) & "|" & (title of theTab as text)
         end repeat
     end repeat
     set AppleScript's text item delimiters to linefeed
-    return records as text
+    return tabRecords as text
 end tell
 ]], quoteAppleScriptString(browser.appID))
 end

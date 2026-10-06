@@ -65,7 +65,10 @@ local mockHS = {
 
 local function completeTask(isMetadata, output)
     for index, task in ipairs(tasks) do
-        local taskIsMetadata = task.script:find("set records to {}", 1, true) ~= nil
+        if task.script:find("set records to {}", 1, true) then
+            error("metadata script uses AppleScript's reserved `records` identifier")
+        end
+        local taskIsMetadata = task.script:find("set tabRecords to {}", 1, true) ~= nil
         if taskIsMetadata == isMetadata then
             table.remove(tasks, index)
             task.callback(0, output)
@@ -184,7 +187,7 @@ local ok, err = xpcall(function()
     browserPoll()
     local pendingMetadata
     for index, task in ipairs(tasks) do
-        if task.script:find("set records to {}", 1, true) then
+        if task.script:find("set tabRecords to {}", 1, true) then
             pendingMetadata = table.remove(tasks, index)
             break
         end
