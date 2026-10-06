@@ -407,11 +407,14 @@ local function refreshBrowserMetadataAsync()
     local activeApp = hs.application.frontmostApplication()
     local activeBrowser = browserForApplication(activeApp)
     local browsers = {}
-    if activeBrowser then
+    if activeBrowser and hs.application.get(activeBrowser.appID) then
         table.insert(browsers, activeBrowser)
     end
     for _, browser in pairs(BROWSERS) do
-        if browser ~= activeBrowser then
+        -- AppleScript's `tell application` launches a stopped app. Snapshot
+        -- only browsers that Hammerspoon reports as already running; the
+        -- application watcher removes history when a browser terminates.
+        if browser ~= activeBrowser and hs.application.get(browser.appID) then
             table.insert(browsers, browser)
         end
     end
