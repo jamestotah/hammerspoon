@@ -461,22 +461,22 @@ local ok, err = xpcall(function()
     diaObserver:fire(diaTabList, "AXSelectedChildrenChanged")
     assert(#tasks == 1, "expected immediate tab-list metadata reconciliation")
     assert(tasks[1].script:find("company.thebrowser.dia", 1, true),
-        "expected the tab-list metadata read to target the open browser")
+        "expected the targeted browser metadata read")
     assert(tasks[1].script:find("set tabPresenceRecords to {}", 1, true),
-        "Dia tab-list notification did not use the fast presence-only snapshot")
+        "expected a presence-only browser snapshot")
     assert(tasks[1].script:find("id of tabs of theWindow", 1, true),
-        "Dia fast snapshot did not bulk-read tab IDs")
+        "expected a bulk tab identifier read")
     assert(not tasks[1].script:find("title of theTab", 1, true),
-        "Dia fast snapshot unnecessarily read tab titles")
+        "expected titles to be omitted from the snapshot")
     assert(not tasks[1].script:find("Google Chrome", 1, true),
-        "Dia tab-list notification unnecessarily queried Chrome")
+        "expected only one browser to be queried")
     completeTask(true, "dia-window|dia-open|")
     intercepted = keyHandler({
         getType = function() return mockHS.eventtap.event.types.keyDown end,
         getKeyCode = function() return mockHS.keycodes.map.tab end,
         getFlags = function() return { cmd = true } end,
     })
-    assert(intercepted == false, "fast Dia presence snapshot did not prune the closed tab from history")
+    assert(intercepted == false, "expected presence reconciliation to prune the closed tab")
 
     -- If the accessibility event is missed, periodic title-enriched polling
     -- still removes the Dia tab from history.
@@ -494,7 +494,7 @@ local ok, err = xpcall(function()
         getKeyCode = function() return mockHS.keycodes.map.tab end,
         getFlags = function() return { cmd = true } end,
     })
-    assert(intercepted == false, "periodic Dia snapshot failed to prune a closed tab")
+    assert(intercepted == false, "expected periodic reconciliation to prune a closed tab")
 
     -- Re-observe two currently active targets so the watchdog can exercise a
     -- real cycle after the closed-tab assertions have reduced history.
@@ -520,9 +520,16 @@ local ok, err = xpcall(function()
     flushDeferredCallbacks()
     canvas = canvasInstances[#canvasInstances]
     assert(canvas.visible, "watchdog setup overlay was not shown")
+    local watchdogSelectionCount = #selectionScripts
+    cycleWatchdog()
+    assert(canvas.visible, "watchdog ended the cycle while Command was still held")
+    assert(#selectionScripts == watchdogSelectionCount,
+        "watchdog selected a target before Command was released")
     commandDown = false
     cycleWatchdog()
     assert(not canvas.visible, "watchdog did not hide overlay after a missed Command release")
+    assert(#selectionScripts == watchdogSelectionCount + 1,
+        "watchdog release did not activate the selected target exactly once")
 
     -- A failed activation must not leave cycle state or the canvas behind.
     commandDown = true
