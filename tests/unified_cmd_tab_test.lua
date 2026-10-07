@@ -10,6 +10,7 @@ local keyHandler
 local cycleWatchdog
 local applicationWatcherCallback
 local windowFocusedCallback
+local cycleWatchdogTimer
 local axObservers = {}
 local deferredCallbacks = {}
 local selectionScripts = {}
@@ -101,8 +102,15 @@ local mockHS = {
     timer = {
         secondsSinceEpoch = function() return now end,
         doEvery = function(interval, callback)
-            if interval == 0.25 then cycleWatchdog = callback else browserPoll = callback end
-            return { stop = function() end }
+            local timer = { callback = callback, stopped = false }
+            function timer:stop() self.stopped = true end
+            if interval == 0.25 then
+                cycleWatchdog = callback
+                cycleWatchdogTimer = timer
+            else
+                browserPoll = callback
+            end
+            return timer
         end,
         doAfter = function(_, callback)
             table.insert(deferredCallbacks, callback)
@@ -272,9 +280,35 @@ local ok, err = xpcall(function()
     completeTask(true, "window-1|tab-a|1|Tab A\nwindow-2|tab-b|1|Tab B")
     canvas.mouseCallbackFn(canvas, "mouseUp", clickedTargetID)
     assert(not canvas.visible, "clicking a history row did not close the overlay")
-    assert(#selectionScripts == selectionCount + 1, "click did not activate the pressed target")
+    assert(#selectionScripts == selectionCount + 1,
+        "click did not activate the pressed target after rows were reindexed")
     assert(selectionScripts[#selectionScripts]:find('"tab%-b"'),
-        "click activated a different browser tab after history was reindexed")
+        "click activated a different target after history was reindexed")
+
+    -- If the pressed target itself disappears before mouseUp, close without
+    -- activating a substitute.
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "pruned-target test could not start a switcher cycle")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    selectionCount = #selectionScripts
+    canvas.mouseCallbackFn(canvas, "mouseDown", clickedTargetID)
+    completeTask(true, "window-1|tab-a|1|Tab A")
+    canvas.mouseCallbackFn(canvas, "mouseUp", clickedTargetID)
+    assert(not canvas.visible, "pruned target left the overlay visible")
+    assert(#selectionScripts == selectionCount,
+        "mouseUp activated a substitute after the pressed target disappeared")
+
+    -- Restore the third tab so the separate identity-mismatch case has two
+    -- live rows to click.
+    activeTabID = "tab-b"
+    activeWindowID = "window-2"
+    browserPoll()
+    pollActiveTab()
 
     -- Releasing over a different row than the one pressed must cancel rather
     -- than commit the target under the pointer at release time.
@@ -613,6 +647,8 @@ local ok, err = xpcall(function()
     assert(#tasks == pendingCount, "Dia notification started a metadata read after stop")
     pendingMetadata.callback(0, "")
     assert(#tasks == pendingCount, "metadata callback started another read after stop")
+    assert(cycleWatchdogTimer and cycleWatchdogTimer.stopped,
+        "stop did not stop the Command-release watchdog")
 end, debug.traceback)
 
 hs = realHS
