@@ -459,9 +459,9 @@ local ok, err = xpcall(function()
     completeTask(false, "dia-window|dia-closed|Closed Dia tab")
 
     diaObserver:fire(diaTabList, "AXSelectedChildrenChanged")
-    assert(#tasks == 1, "Dia tab-list notification did not trigger an immediate metadata read")
+    assert(#tasks == 1, "expected immediate tab-list metadata reconciliation")
     assert(tasks[1].script:find("company.thebrowser.dia", 1, true),
-        "Dia tab-list notification did not target Dia metadata")
+        "expected the tab-list metadata read to target the open browser")
     assert(tasks[1].script:find("set tabPresenceRecords to {}", 1, true),
         "Dia tab-list notification did not use the fast presence-only snapshot")
     assert(tasks[1].script:find("id of tabs of theWindow", 1, true),
