@@ -38,7 +38,7 @@ and may request Automation permission to read and select browser tabs.
 
 | Target | Identity | Selection |
 | --- | --- | --- |
-| Ordinary app window | Bundle ID + window ID | Focus the window |
+| Ordinary app window | Bundle ID or application name + window ID | Focus the window after verifying its application identity |
 | Google Chrome tab | Browser + tab ID | Activate its window and tab index |
 | Dia tab | Browser + tab ID | Use Dia's `focus tab` AppleScript command |
 | Spokenly | Application bundle ID | Activate the visible app |

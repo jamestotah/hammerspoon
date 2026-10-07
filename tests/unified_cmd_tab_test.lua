@@ -1,13 +1,25 @@
 -- Run with: hs -c 'dofile(".../tests/unified_cmd_tab_test.lua")'
--- This exercises the closed-tab history regression through the public key path.
--- Value: protects closed browser tabs staying out of Command-Tab history after close, empty snapshots, and stale poll races; fails_when=metadata pruning or generation checks are removed; why_new=no pre-existing regression test covers browser history cleanup; seam=none
+-- Exercise browser-history cleanup, stable row selection, stale window IDs,
+-- missed Command-release recovery, and activation-error cleanup via public paths.
+-- Value: protects stable click identity and clean cycle recovery; fails_when=rows resolve by index or finish leaves stale cycle state; why_new=prior test missed reordered and mismatched mouse release paths; seam=none
 local realHS = hs
 local now = 0
 local tasks = {}
 local browserPoll
 local keyHandler
+local cycleWatchdog
 local applicationWatcherCallback
+local windowFocusedCallback
+local cycleWatchdogTimer
 local axObservers = {}
+local deferredCallbacks = {}
+local selectionScripts = {}
+local canvasInstances = {}
+local commandDown = false
+local selectionShouldThrow = false
+local windowLookup = {}
+local foreignWindowFocusCount = 0
+local legacyWindowFocusCount = 0
 local activeTabID = "tab-a"
 local activeWindowID = "window-1"
 local chromeRunning = true
@@ -33,7 +45,26 @@ local dia = {
     pid = function() return 4321 end,
     allWindows = function() return { {} } end,
 }
-local finder = { bundleID = function() return "com.apple.finder" end }
+local finder = {
+    bundleID = function() return "com.apple.finder" end,
+    name = function() return "Finder" end,
+}
+local unrelatedApp = {
+    bundleID = function() return "com.example.unrelated" end,
+    name = function() return "Unrelated" end,
+}
+local legacyApp = {
+    bundleID = function() return nil end,
+    name = function() return "Legacy App" end,
+}
+local recycledWindow = {
+    application = function() return unrelatedApp end,
+    focus = function() foreignWindowFocusCount = foreignWindowFocusCount + 1 end,
+}
+local legacyWindow = {
+    application = function() return legacyApp end,
+    focus = function() legacyWindowFocusCount = legacyWindowFocusCount + 1 end,
+}
 local frontmostApp = chrome
 local mockHS = {
     logger = { new = function() return {} end },
@@ -57,15 +88,34 @@ local mockHS = {
         filter = {
             windowFocused = "focused", windowDestroyed = "destroyed", windowNotVisible = "hidden",
             new = function()
-                return { subscribe = function() end, unsubscribeAll = function() end }
+                return {
+                    subscribe = function(_, event, callback)
+                        if event == "focused" then windowFocusedCallback = callback end
+                    end,
+                    unsubscribeAll = function() end,
+                }
             end,
         },
         frontmostWindow = function() return nil end,
+        get = function(id) return windowLookup[id] end,
     },
     timer = {
         secondsSinceEpoch = function() return now end,
-        doEvery = function(_, callback) browserPoll = callback; return { stop = function() end } end,
-        doAfter = function() return { stop = function() end } end,
+        doEvery = function(interval, callback)
+            local timer = { callback = callback, stopped = false }
+            function timer:stop() self.stopped = true end
+            if interval == 0.25 then
+                cycleWatchdog = callback
+                cycleWatchdogTimer = timer
+            else
+                browserPoll = callback
+            end
+            return timer
+        end,
+        doAfter = function(_, callback)
+            table.insert(deferredCallbacks, callback)
+            return { stop = function() end }
+        end,
     },
     task = {
         new = function(_, callback, args)
@@ -100,14 +150,35 @@ local mockHS = {
             end,
         },
     },
-    osascript = { applescript = function() return true, true end },
+    osascript = { applescript = function(script)
+        table.insert(selectionScripts, script)
+        if selectionShouldThrow then error("simulated target activation failure") end
+        return true, true
+    end },
     eventtap = {
         event = { types = { keyDown = 1, keyUp = 2, flagsChanged = 3 } },
         new = function(_, callback) keyHandler = callback; return { start = function() end, stop = function() end } end,
+        checkKeyboardModifiers = function() return { cmd = commandDown } end,
     },
     keycodes = { map = { tab = 48 } },
     screen = { mainScreen = function() return { frame = function() return { x = 0, y = 0, w = 1000, h = 800 } end } end },
-    canvas = { windowLevels = { overlay = 1 } },
+    canvas = {
+        windowLevels = { overlay = 1 },
+        new = function(frame)
+            local canvas = { initialFrame = frame, mouseCallbackFn = nil, visible = false, elements = {} }
+            function canvas:level() return self end
+            function canvas:behaviorAsLabels() return self end
+            function canvas:clickActivating() return self end
+            function canvas:mouseCallback(callback) self.mouseCallbackFn = callback; return self end
+            function canvas:frame(value) if value then self.currentFrame = value end; return self end
+            function canvas:replaceElements(elements) self.elements = elements; return self end
+            function canvas:show() self.visible = true; return self end
+            function canvas:hide() self.visible = false; return self end
+            function canvas:bringToFront() return self end
+            table.insert(canvasInstances, canvas)
+            return canvas
+        end,
+    },
     image = { imageFromAppBundle = function() return nil end },
 }
 
@@ -144,6 +215,22 @@ local function pollActiveTab()
     completeTask(false, activeWindowID .. "|" .. activeTabID .. "|1|Tab " .. activeTabID)
 end
 
+local function flushDeferredCallbacks()
+    while #deferredCallbacks > 0 do
+        local callback = table.remove(deferredCallbacks, 1)
+        callback()
+    end
+end
+
+local function findCanvasRow(canvas, targetID)
+    for _, element in ipairs(canvas.elements) do
+        if element.type == "rectangle" and element.id == targetID then
+            return element
+        end
+    end
+    return nil
+end
+
 local ok, err = xpcall(function()
     hs = mockHS
     local modulePath = testSourcePath:gsub("/tests/[^/]+$", "/Spoons/UnifiedCommandTab.spoon/init.lua")
@@ -165,17 +252,154 @@ local ok, err = xpcall(function()
     pollActiveTab()
     finishMetadataIfRunning("window-1|tab-a|1|Tab A\nwindow-2|tab-b|1|Tab B")
 
+    -- Add a third tab so pruning the first MRU row can move the clicked second
+    -- row onto a different target before mouseUp arrives.
+    now = 4.2
+    activeTabID = "tab-c"
+    activeWindowID = "window-3"
+    browserPoll()
+    pollActiveTab()
+
+    commandDown = true
     local intercepted = keyHandler({
         getType = function() return mockHS.eventtap.event.types.keyDown end,
         getKeyCode = function() return mockHS.keycodes.map.tab end,
         getFlags = function() return { cmd = true } end,
     })
     assert(intercepted == true, "moving an open tab to another window discarded its history")
+    flushDeferredCallbacks()
+    local canvas = canvasInstances[#canvasInstances]
+    assert(canvas and canvas.visible, "Command-Tab did not show the history overlay")
+    local clickedTargetID = "target:browserTab:com.google.Chrome:tab-b"
+    assert(findCanvasRow(canvas, clickedTargetID), "expected Chrome history row was not rendered")
+    local selectionCount = #selectionScripts
+    canvas.mouseCallbackFn(canvas, "mouseDown", clickedTargetID)
+    -- Prune the current first row while the pointer is down. Tab B shifts from
+    -- row 2 to row 1, and Tab A would occupy its old index in stale code.
+    assert(#tasks > 0, "expected metadata refresh in flight during pointer press")
+    completeTask(true, "window-1|tab-a|1|Tab A\nwindow-2|tab-b|1|Tab B")
+    canvas.mouseCallbackFn(canvas, "mouseUp", clickedTargetID)
+    assert(not canvas.visible, "clicking a history row did not close the overlay")
+    assert(#selectionScripts == selectionCount + 1,
+        "click did not activate the pressed target after rows were reindexed")
+    assert(selectionScripts[#selectionScripts]:find('"tab%-b"'),
+        "click activated a different target after history was reindexed")
+
+    -- If the pressed target itself disappears before mouseUp, close without
+    -- activating a substitute.
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "pruned-target test could not start a switcher cycle")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    selectionCount = #selectionScripts
+    canvas.mouseCallbackFn(canvas, "mouseDown", clickedTargetID)
+    completeTask(true, "window-1|tab-a|1|Tab A")
+    canvas.mouseCallbackFn(canvas, "mouseUp", clickedTargetID)
+    assert(not canvas.visible, "pruned target left the overlay visible")
+    assert(#selectionScripts == selectionCount,
+        "mouseUp activated a substitute after the pressed target disappeared")
+
+    -- Restore the third tab so the separate identity-mismatch case has two
+    -- live rows to click.
+    activeTabID = "tab-b"
+    activeWindowID = "window-2"
+    browserPoll()
+    pollActiveTab()
+
+    -- Releasing over a different row than the one pressed must cancel rather
+    -- than commit the target under the pointer at release time.
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "identity-mismatch test could not start a switcher cycle")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    local otherTargetID = "target:browserTab:com.google.Chrome:tab-a"
+    assert(findCanvasRow(canvas, otherTargetID), "second browser row was not rendered")
+    selectionCount = #selectionScripts
+    canvas.mouseCallbackFn(canvas, "mouseDown", clickedTargetID)
+    canvas.mouseCallbackFn(canvas, "mouseUp", otherTargetID)
+    assert(not canvas.visible, "mismatched pointer release left the overlay visible")
+    assert(#selectionScripts == selectionCount,
+        "mismatched pointer release activated a target other than the one pressed")
+
+    -- Restore Tab B as the active history entry for subsequent cycling tests.
+    activeTabID = "tab-c"
+    activeWindowID = "window-3"
+    browserPoll()
+    pollActiveTab()
+    commandDown = false
     keyHandler({
         getType = function() return mockHS.eventtap.event.types.flagsChanged end,
         getKeyCode = function() return mockHS.keycodes.map.tab end,
         getFlags = function() return { cmd = false } end,
     })
+
+    -- Window IDs can be recycled. If Finder's old ID now resolves to another
+    -- app, selecting that stale history entry must not focus the new owner.
+    local finderWindow = {
+        application = function() return finder end,
+        id = function() return 987 end,
+        title = function() return "Finder window" end,
+    }
+    windowFocusedCallback(finderWindow)
+    windowLookup[987] = recycledWindow
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "recycled-window test could not start a switcher cycle")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    local finderTargetID = "target:window:com.apple.finder:987"
+    assert(findCanvasRow(canvas, finderTargetID), "Finder history row was not rendered")
+    canvas.mouseCallbackFn(canvas, "mouseDown", finderTargetID)
+    canvas.mouseCallbackFn(canvas, "mouseUp", finderTargetID)
+    assert(foreignWindowFocusCount == 0, "stale window ID focused a different application")
+    commandDown = false
+    keyHandler({
+        getType = function() return mockHS.eventtap.event.types.flagsChanged end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = false } end,
+    })
+    applicationWatcherCallback("Finder", "terminated")
+
+    -- Targets without bundle IDs use the application name as identity and
+    -- must remain selectable after the stale-window ownership check.
+    local legacyFocusedWindow = {
+        application = function() return legacyApp end,
+        id = function() return 988 end,
+        title = function() return "Legacy window" end,
+    }
+    windowFocusedCallback(legacyFocusedWindow)
+    windowLookup[988] = legacyWindow
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "bundle-ID-less window test could not start a switcher cycle")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    local legacyTargetID = "target:window:Legacy App:988"
+    assert(findCanvasRow(canvas, legacyTargetID), "bundle-ID-less app history row was not rendered")
+    canvas.mouseCallbackFn(canvas, "mouseDown", legacyTargetID)
+    canvas.mouseCallbackFn(canvas, "mouseUp", legacyTargetID)
+    assert(legacyWindowFocusCount == 1, "valid bundle-ID-less window was rejected")
+    commandDown = false
+    keyHandler({
+        getType = function() return mockHS.eventtap.event.types.flagsChanged end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = false } end,
+    })
+    applicationWatcherCallback("Legacy App", "terminated")
 
     -- Close the background tab. A complete metadata snapshot should remove it.
     now = 5.2
@@ -269,24 +493,24 @@ local ok, err = xpcall(function()
     completeTask(false, "dia-window|dia-closed|Closed Dia tab")
 
     diaObserver:fire(diaTabList, "AXSelectedChildrenChanged")
-    assert(#tasks == 1, "Dia tab-list notification did not trigger an immediate metadata read")
+    assert(#tasks == 1, "expected immediate tab-list metadata reconciliation")
     assert(tasks[1].script:find("company.thebrowser.dia", 1, true),
-        "Dia tab-list notification did not target Dia metadata")
+        "expected the targeted browser metadata read")
     assert(tasks[1].script:find("set tabPresenceRecords to {}", 1, true),
-        "Dia tab-list notification did not use the fast presence-only snapshot")
+        "expected a presence-only browser snapshot")
     assert(tasks[1].script:find("id of tabs of theWindow", 1, true),
-        "Dia fast snapshot did not bulk-read tab IDs")
+        "expected a bulk tab identifier read")
     assert(not tasks[1].script:find("title of theTab", 1, true),
-        "Dia fast snapshot unnecessarily read tab titles")
+        "expected titles to be omitted from the snapshot")
     assert(not tasks[1].script:find("Google Chrome", 1, true),
-        "Dia tab-list notification unnecessarily queried Chrome")
+        "expected only one browser to be queried")
     completeTask(true, "dia-window|dia-open|")
     intercepted = keyHandler({
         getType = function() return mockHS.eventtap.event.types.keyDown end,
         getKeyCode = function() return mockHS.keycodes.map.tab end,
         getFlags = function() return { cmd = true } end,
     })
-    assert(intercepted == false, "fast Dia presence snapshot did not prune the closed tab from history")
+    assert(intercepted == false, "expected presence reconciliation to prune the closed tab")
 
     -- If the accessibility event is missed, periodic title-enriched polling
     -- still removes the Dia tab from history.
@@ -304,7 +528,90 @@ local ok, err = xpcall(function()
         getKeyCode = function() return mockHS.keycodes.map.tab end,
         getFlags = function() return { cmd = true } end,
     })
-    assert(intercepted == false, "periodic Dia snapshot failed to prune a closed tab")
+    assert(intercepted == false, "expected periodic reconciliation to prune a closed tab")
+
+    -- Re-observe two currently active targets so the watchdog can exercise a
+    -- real cycle after the closed-tab assertions have reduced history.
+    frontmostApp = chrome
+    activeTabID = "chrome-open"
+    activeWindowID = "window-1"
+    browserPoll()
+    pollActiveTab()
+    frontmostApp = dia
+    activeTabID = "dia-open"
+    activeWindowID = "dia-window"
+    browserPoll()
+    pollActiveTab()
+
+    -- The watchdog must finish a cycle when Command's release event is lost.
+    commandDown = true
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "watchdog setup could not start a switcher cycle")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    assert(canvas.visible, "watchdog setup overlay was not shown")
+    local watchdogSelectionCount = #selectionScripts
+    cycleWatchdog()
+    assert(canvas.visible, "watchdog ended the cycle while Command was still held")
+    assert(#selectionScripts == watchdogSelectionCount,
+        "watchdog selected a target before Command was released")
+    commandDown = false
+    cycleWatchdog()
+    assert(not canvas.visible, "watchdog did not hide overlay after a missed Command release")
+    assert(#selectionScripts == watchdogSelectionCount + 1,
+        "watchdog release did not activate the selected target exactly once")
+
+    -- A failed activation must not leave cycle state or the canvas behind.
+    commandDown = true
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "activation-failure setup could not start a switcher cycle")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    assert(canvas.visible, "activation-failure setup overlay was not shown")
+    selectionShouldThrow = true
+    commandDown = false
+    keyHandler({
+        getType = function() return mockHS.eventtap.event.types.flagsChanged end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = false } end,
+    })
+    selectionShouldThrow = false
+    assert(not canvas.visible, "failed target activation left the overlay visible")
+
+    -- The next Command-Tab must start at the first switcher position. If the
+    -- failed activation left cycle state behind, this advances the old cycle.
+    commandDown = true
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "switcher did not start a fresh cycle after activation failed")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    local headerText
+    for _, element in ipairs(canvas.elements) do
+        if element.type == "text" and element.text:find(" of ", 1, true) then
+            headerText = element.text
+            break
+        end
+    end
+    assert(headerText and headerText:match("^2 of "),
+        "activation failure left the prior cycle index active: " .. tostring(headerText))
+    commandDown = false
+    keyHandler({
+        getType = function() return mockHS.eventtap.event.types.flagsChanged end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = false } end,
+    })
 
     -- If Dia signals while a full Chrome-then-Dia snapshot is in progress,
     -- that snapshot's upcoming Dia read satisfies the queued notification.
@@ -324,10 +631,10 @@ local ok, err = xpcall(function()
     -- Keep another browser running so the stop-callback check can verify that
     -- a late Chrome completion does not continue the metadata-read chain.
     now = 14.8
-    browserPoll()
+    diaObserver:fire(diaTabList, "AXSelectedChildrenChanged")
     local pendingMetadata
     for index, task in ipairs(tasks) do
-        if task.script:find("set tabRecords to {}", 1, true) then
+        if task.script:find("set tabPresenceRecords to {}", 1, true) then
             pendingMetadata = table.remove(tasks, index)
             break
         end
@@ -340,8 +647,10 @@ local ok, err = xpcall(function()
     assert(#tasks == pendingCount, "Dia notification started a metadata read after stop")
     pendingMetadata.callback(0, "")
     assert(#tasks == pendingCount, "metadata callback started another read after stop")
+    assert(cycleWatchdogTimer and cycleWatchdogTimer.stopped,
+        "stop did not stop the Command-release watchdog")
 end, debug.traceback)
 
 hs = realHS
 if not ok then error(err) end
-print("Unified Command-Tab closed-tab regression: PASS")
+print("Unified Command-Tab regression: PASS")

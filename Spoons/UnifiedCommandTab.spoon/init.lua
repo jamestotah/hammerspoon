@@ -55,6 +55,7 @@ local cycle = nil
 local suppressNextTabUp = false
 local eventTap = nil
 local browserTimer = nil
+local cycleWatchdog = nil
 local windowFilter = nil
 local applicationWatcher = nil
 local menuRefresh = nil
@@ -81,6 +82,7 @@ local MAX_VISIBLE_ROWS = 12
 local ROW_HEIGHT = 48
 local HEADER_HEIGHT = 72
 local FOOTER_HEIGHT = 36
+local CYCLE_WATCHDOG_INTERVAL = 0.25
 
 local function copyTarget(target)
     if not target then
@@ -733,10 +735,11 @@ local function targetIsAvailable(target)
     end
 
     local app = window:application()
-    if not app or (target.bundleID and app:bundleID() ~= target.bundleID) then
+    local appIdentity = app and (app:bundleID() or app:name())
+    if not app or appIdentity ~= target.bundleID then
         return false
     end
-    return hs.application.get(target.bundleID or app:bundleID()) ~= nil
+    return hs.application.get(appIdentity) ~= nil
 end
 
 local function pruneHistory()
@@ -856,18 +859,51 @@ local function overlayElements()
         overlay:behaviorAsLabels({ "canJoinAllSpaces", "stationary" })
         overlay:clickActivating(false)
         overlay:mouseCallback(function(_, message, id)
-            local rowIndex = tonumber(tostring(id):match("^row:(%d+)$"))
-            if not rowIndex or not cycle or not cycle.order[rowIndex] then
+            -- Row identity must survive asynchronous history pruning and
+            -- reordering between the canvas render and the click callback.
+            local targetKey = tostring(id):match("^target:(.+)$")
+            if not targetKey or not cycle then
                 return
             end
 
+            local targetIndex
+            local target
+            for index, candidate in ipairs(cycle.order) do
+                if candidate.key == targetKey then
+                    targetIndex = index
+                    target = candidate
+                    break
+                end
+            end
+
             if message == "mouseDown" then
-                cycle.index = rowIndex
-                cycle.selected = cycle.order[rowIndex]
-                scheduleOverlayUpdate()
+                if target then
+                    cycle.pointerSelectionKey = targetKey
+                    cycle.index = targetIndex
+                    cycle.selected = target
+                    scheduleOverlayUpdate()
+                end
             elseif message == "mouseUp" then
-                cycle.index = rowIndex
-                cycle.selected = cycle.order[rowIndex]
+                -- If the clicked target disappeared during the pointer press,
+                -- close the overlay without substituting the row now at its
+                -- old position.
+                local pressedKey = cycle.pointerSelectionKey
+                cycle.pointerSelectionKey = nil
+                local pressedIndex
+                local pressedTarget
+                for index, candidate in ipairs(cycle.order) do
+                    if candidate.key == pressedKey then
+                        pressedIndex = index
+                        pressedTarget = candidate
+                        break
+                    end
+                end
+                if pressedTarget and pressedKey == targetKey then
+                    cycle.index = pressedIndex
+                    cycle.selected = pressedTarget
+                else
+                    cycle.selected = nil
+                end
                 finishCycle()
             end
         end)
@@ -914,7 +950,7 @@ local function overlayElements()
 
         table.insert(elements, {
             type = "rectangle",
-            id = "row:" .. tostring(index),
+            id = "target:" .. target.key,
             frame = { x = 12, y = rowY, w = OVERLAY_WIDTH - 24, h = ROW_HEIGHT - 2 },
             roundedRectRadii = { xRadius = 7, yRadius = 7 },
             fillColor = isSelected
@@ -1128,18 +1164,20 @@ local function selectTarget(target)
     end
 
     local window = hs.window.get(target.windowID)
-    if window then
-        window:focus()
-        return true
+    if not window then
+        return false
     end
 
-    local app = hs.application.get(target.appName or target.bundleID)
-    if app then
-        app:activate()
-        return true
+    -- A stale/recycled window ID must never focus an unrelated window. For a
+    -- window target, failure to find that exact window means no activation.
+    local app = window:application()
+    local appIdentity = app and (app:bundleID() or app:name())
+    if not app or appIdentity ~= target.bundleID then
+        return false
     end
 
-    return false
+    window:focus()
+    return true
 end
 
 local function moveWithinCycle()
@@ -1211,17 +1249,20 @@ local function beginCycle(direction)
 end
 
 finishCycle = function()
+    local selected = cycle and cycle.selected and copyTarget(cycle.selected)
+    -- Clear state before target activation so an AppleScript/window error
+    -- cannot leave the overlay logically active.
+    cycle = nil
     hideOverlay()
 
-    if cycle and cycle.selected then
-        -- Perform exactly one activation, after the user has released
-        -- Command. This is the only target-selection operation during a
-        -- cycle.
-        if selectTarget(cycle.selected) then
-            remember(cycle.selected)
+    if selected then
+        local ok, activated = pcall(selectTarget, selected)
+        if ok and activated then
+            remember(selected)
+        elseif not ok and hs.printf then
+            pcall(hs.printf, "Unified Command-Tab target selection failed: %s", tostring(activated))
         end
     end
-    cycle = nil
 end
 
 local function toggleEnabled()
@@ -1350,6 +1391,14 @@ function obj:start()
         end
     end)
 
+    -- Recover if the event tap misses Command's release event. Without this
+    -- fallback the active cycle keeps the canvas visible indefinitely.
+    cycleWatchdog = hs.timer.doEvery(CYCLE_WATCHDOG_INTERVAL, function()
+        if cycle and not hs.eventtap.checkKeyboardModifiers().cmd then
+            finishCycle()
+        end
+    end)
+
     eventTap = hs.eventtap.new({
         hs.eventtap.event.types.keyDown,
         hs.eventtap.event.types.keyUp,
@@ -1418,6 +1467,10 @@ function obj:stop()
     if browserTimer then
         browserTimer:stop()
         browserTimer = nil
+    end
+    if cycleWatchdog then
+        cycleWatchdog:stop()
+        cycleWatchdog = nil
     end
     if browserReadTask then
         browserReadTask:terminate()
