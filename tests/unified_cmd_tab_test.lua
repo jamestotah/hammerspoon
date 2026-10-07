@@ -1,6 +1,7 @@
 -- Run with: hs -c 'dofile(".../tests/unified_cmd_tab_test.lua")'
 -- Exercise browser-history cleanup, stable row selection, stale window IDs,
 -- missed Command-release recovery, and activation-error cleanup via public paths.
+-- Value: protects stable click identity and clean cycle recovery; fails_when=rows resolve by index or finish leaves stale cycle state; why_new=prior test missed reordered and mismatched mouse release paths; seam=none
 local realHS = hs
 local now = 0
 local tasks = {}
@@ -266,11 +267,36 @@ local ok, err = xpcall(function()
     assert(selectionScripts[#selectionScripts]:find('"tab%-b"'),
         "click activated a different browser tab after history was reindexed")
 
+    -- Releasing over a different row than the one pressed must cancel rather
+    -- than commit the target under the pointer at release time.
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "identity-mismatch test could not start a switcher cycle")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    local otherTargetID = "target:browserTab:com.google.Chrome:tab-a"
+    assert(findCanvasRow(canvas, otherTargetID), "second browser row was not rendered")
+    selectionCount = #selectionScripts
+    canvas.mouseCallbackFn(canvas, "mouseDown", clickedTargetID)
+    canvas.mouseCallbackFn(canvas, "mouseUp", otherTargetID)
+    assert(not canvas.visible, "mismatched pointer release left the overlay visible")
+    assert(#selectionScripts == selectionCount,
+        "mismatched pointer release activated a target other than the one pressed")
+
     -- Restore Tab B as the active history entry for subsequent cycling tests.
     activeTabID = "tab-c"
     activeWindowID = "window-3"
     browserPoll()
     pollActiveTab()
+    commandDown = false
+    keyHandler({
+        getType = function() return mockHS.eventtap.event.types.flagsChanged end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = false } end,
+    })
 
     -- Window IDs can be recycled. If Finder's old ID now resolves to another
     -- app, selecting that stale history entry must not focus the new owner.
@@ -479,6 +505,33 @@ local ok, err = xpcall(function()
     })
     selectionShouldThrow = false
     assert(not canvas.visible, "failed target activation left the overlay visible")
+
+    -- The next Command-Tab must start at the first switcher position. If the
+    -- failed activation left cycle state behind, this advances the old cycle.
+    commandDown = true
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "switcher did not start a fresh cycle after activation failed")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    local headerText
+    for _, element in ipairs(canvas.elements) do
+        if element.type == "text" and element.text:find(" of ", 1, true) then
+            headerText = element.text
+            break
+        end
+    end
+    assert(headerText and headerText:match("^2 of "),
+        "activation failure left the prior cycle index active: " .. tostring(headerText))
+    commandDown = false
+    keyHandler({
+        getType = function() return mockHS.eventtap.event.types.flagsChanged end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = false } end,
+    })
 
     -- If Dia signals while a full Chrome-then-Dia snapshot is in progress,
     -- that snapshot's upcoming Dia read satisfies the queued notification.
