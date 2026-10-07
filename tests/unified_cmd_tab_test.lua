@@ -56,6 +56,7 @@ local recycledWindow = {
 }
 local frontmostApp = chrome
 local mockHS = {
+    logger = { new = function() return {} end },
     settings = { get = function() return nil end },
     application = {
         frontmostApplication = function() return frontmostApp end,
@@ -214,8 +215,10 @@ end
 
 local ok, err = xpcall(function()
     hs = mockHS
-    local modulePath = testSourcePath:gsub("/tests/[^/]+$", "/unified_cmd_tab.lua")
+    local modulePath = testSourcePath:gsub("/tests/[^/]+$", "/Spoons/UnifiedCommandTab.spoon/init.lua")
     local switcher = dofile(modulePath)
+    assert(switcher.name == "UnifiedCommandTab" and switcher.version,
+        "module did not expose Spoon metadata")
     switcher:start()
 
     -- Observe two tabs, creating two separate history entries.

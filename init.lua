@@ -11,9 +11,10 @@ end)
 hs.allowAppleScript(true)
 
 hs.loadSpoon("ArrangeDesktop")
+hs.loadSpoon("UnifiedCommandTab")
 
 -- Treat Chrome/Dia tabs and Spokenly as MRU entries for Command-Tab.
-local unifiedCmdTab = dofile(hs.configdir .. "/unified_cmd_tab.lua")
+local unifiedCmdTab = spoon.UnifiedCommandTab
 unifiedCmdTab:start()
 
 -- Add a menubar menu with your saved arrangements

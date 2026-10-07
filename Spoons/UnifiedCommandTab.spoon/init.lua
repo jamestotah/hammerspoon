@@ -1,5 +1,7 @@
--- Treat selected browser tabs and ordinary application windows as one
--- most-recently-used list for Command-Tab.
+--- === UnifiedCommandTab ===
+---
+--- Combine application windows and browser tabs in a single Command-Tab
+--- most-recently-used switcher.
 --
 -- Supported browsers:
 --   Google Chrome (com.google.Chrome)
@@ -9,6 +11,13 @@
 -- Chrome selects an active tab by index, while Dia exposes a tab focus command.
 
 local obj = {}
+obj.__index = obj
+obj.name = "UnifiedCommandTab"
+obj.version = "1.0.0"
+obj.author = "James Totah <https://github.com/jamestotah>"
+obj.homepage = "https://github.com/jamestotah/hammerspoon/tree/main/Spoons/UnifiedCommandTab.spoon"
+obj.license = "MIT - https://opensource.org/licenses/MIT"
+obj.logger = hs.logger.new("UnifiedCommandTab")
 
 local SETTINGS_KEY = "unifiedCmdTab.enabled"
 -- Browser state comes from AppleScript, which is relatively expensive. Run it
