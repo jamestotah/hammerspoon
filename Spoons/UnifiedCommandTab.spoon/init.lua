@@ -735,10 +735,11 @@ local function targetIsAvailable(target)
     end
 
     local app = window:application()
-    if not app or (target.bundleID and app:bundleID() ~= target.bundleID) then
+    local appIdentity = app and (app:bundleID() or app:name())
+    if not app or appIdentity ~= target.bundleID then
         return false
     end
-    return hs.application.get(target.bundleID or app:bundleID()) ~= nil
+    return hs.application.get(appIdentity) ~= nil
 end
 
 local function pruneHistory()
@@ -1170,7 +1171,8 @@ local function selectTarget(target)
     -- A stale/recycled window ID must never focus an unrelated window. For a
     -- window target, failure to find that exact window means no activation.
     local app = window:application()
-    if not app or (target.bundleID and app:bundleID() ~= target.bundleID) then
+    local appIdentity = app and (app:bundleID() or app:name())
+    if not app or appIdentity ~= target.bundleID then
         return false
     end
 

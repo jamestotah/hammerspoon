@@ -18,6 +18,7 @@ local commandDown = false
 local selectionShouldThrow = false
 local windowLookup = {}
 local foreignWindowFocusCount = 0
+local legacyWindowFocusCount = 0
 local activeTabID = "tab-a"
 local activeWindowID = "window-1"
 local chromeRunning = true
@@ -51,9 +52,17 @@ local unrelatedApp = {
     bundleID = function() return "com.example.unrelated" end,
     name = function() return "Unrelated" end,
 }
+local legacyApp = {
+    bundleID = function() return nil end,
+    name = function() return "Legacy App" end,
+}
 local recycledWindow = {
     application = function() return unrelatedApp end,
     focus = function() foreignWindowFocusCount = foreignWindowFocusCount + 1 end,
+}
+local legacyWindow = {
+    application = function() return legacyApp end,
+    focus = function() legacyWindowFocusCount = legacyWindowFocusCount + 1 end,
 }
 local frontmostApp = chrome
 local mockHS = {
@@ -327,6 +336,36 @@ local ok, err = xpcall(function()
         getFlags = function() return { cmd = false } end,
     })
     applicationWatcherCallback("Finder", "terminated")
+
+    -- Targets without bundle IDs use the application name as identity and
+    -- must remain selectable after the stale-window ownership check.
+    local legacyFocusedWindow = {
+        application = function() return legacyApp end,
+        id = function() return 988 end,
+        title = function() return "Legacy window" end,
+    }
+    windowFocusedCallback(legacyFocusedWindow)
+    windowLookup[988] = legacyWindow
+    intercepted = keyHandler({
+        getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end,
+    })
+    assert(intercepted == true, "bundle-ID-less window test could not start a switcher cycle")
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
+    local legacyTargetID = "target:window:Legacy App:988"
+    assert(findCanvasRow(canvas, legacyTargetID), "bundle-ID-less app history row was not rendered")
+    canvas.mouseCallbackFn(canvas, "mouseDown", legacyTargetID)
+    canvas.mouseCallbackFn(canvas, "mouseUp", legacyTargetID)
+    assert(legacyWindowFocusCount == 1, "valid bundle-ID-less window was rejected")
+    commandDown = false
+    keyHandler({
+        getType = function() return mockHS.eventtap.event.types.flagsChanged end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = false } end,
+    })
+    applicationWatcherCallback("Legacy App", "terminated")
 
     -- Close the background tab. A complete metadata snapshot should remove it.
     now = 5.2
