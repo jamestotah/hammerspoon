@@ -1,7 +1,7 @@
 # UnifiedCommandTab Spoon
 
 `UnifiedCommandTab` combines ordinary application windows, Google Chrome tabs,
-Dia tabs, and visible Spokenly windows in one most-recently-used Command-Tab
+Dia tabs, and Spokenly while it has windows in one most-recently-used Command-Tab
 switcher.
 
 ## Install
@@ -22,6 +22,7 @@ Other configurations can omit that menu; the Spoon works without it.
 - `spoon.UnifiedCommandTab:start()` starts the event tap, window/application
   watchers, and browser metadata polling. It is safe to call more than once.
 - `spoon.UnifiedCommandTab:stop()` stops those resources.
+  If a cycle is active, it commits the highlighted target before returning.
 - `spoon.UnifiedCommandTab:isEnabled()` reports whether the custom switcher is
   enabled.
 - `spoon.UnifiedCommandTab:addMenuItems(items)` appends a toggle and status item
@@ -41,7 +42,7 @@ and may request Automation permission to read and select browser tabs.
 | Ordinary app window | Bundle ID or application name + window ID | Focus the window after verifying its application identity |
 | Google Chrome tab | Browser + tab ID | Activate its window and tab index |
 | Dia tab | Browser + tab ID | Use Dia's `focus tab` AppleScript command |
-| Spokenly | Application bundle ID | Activate the visible app |
+| Spokenly | Application bundle ID | Activate the application |
 
 See the repository's [Unified Command-Tab guide](../../docs/unified-command-tab.md)
 for keyboard behavior, permissions, performance details, and extension guidance.
