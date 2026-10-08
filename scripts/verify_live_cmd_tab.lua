@@ -123,7 +123,7 @@ end tell]], quote(windowID), quote(tabID)))
                     restorationFailures=restorationFailures, overlayHidden=overlayHidden,
                     cycleCleared=cycleCleared, commandReleased=not modifiers.cmd,
                     shiftReleased=not modifiers.shift, eventTapEnabled=tapEnabled}
-                hs.json.write(report, reportPath, true, true)
+                assert(hs.json.write(report, reportPath, true, true), "Could not write trial report")
                 print("Live Command-Tab trial: " .. (report.passed and "PASS" or "FAIL"))
             end
             local function settle(predicate, nextStep, label)
