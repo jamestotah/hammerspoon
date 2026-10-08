@@ -132,14 +132,70 @@ four-second receive timeout after four passing cases and restored the original
 state; its final case diagnostic was unavailable. The complete rerun used the
 90-second CLI timeout shown above.
 
-## Live acceptance and remaining limits
+## Installed Command-Tab trial
 
-Native Dia selection is verified; installation and an actual switcher trial
-remain pending. Before rollout, identify the currently loaded switcher version,
-then verify actual release-to-focus behavior for Dia and Chrome, ordinary
-windows, Spokenly, moved/closed tabs, and multiple windows/displays. Check mouse
-selection during reconciliation, rapid cycling, both key-release orders, and
-overlay recovery. Reloading rebuilds in-memory history.
+On October 8, 2026, the live checkout was switched from baseline `0bbd584` to
+`live/unified-command-tab-optimized` at the committed optimization, and
+Hammerspoon was reloaded. The registered, enabled `UnifiedCommandTab` Spoon
+reported its source as `~/.hammerspoon/Spoons/UnifiedCommandTab.spoon/init.lua`.
+Accessibility was available and Secure Input was off.
+
+An opt-in asynchronous trial posts actual macOS Command/Shift/Tab events to the
+installed event tap. It seeds history through native focus changes and waits
+for normal browser observation. It reads private Lua state only to inspect the
+highlight, cycle, and canvas; it neither modifies that state nor invokes private
+callbacks. Native AppleScript read-back confirms the active tab/window.
+
+```sh
+hs -t 30 -c 'dofile("/absolute/checkout/scripts/verify_live_cmd_tab.lua")("/absolute/writable/trial-report.json")'
+```
+
+The call returns when the trial starts. Wait for the JSON report before using
+the keyboard or interpreting the outcome. Run only when brief focus changes
+are acceptable, with all physical modifiers released. The trial restores each
+Dia window's selected tab, the original frontmost application/window, and the
+mouse position. Normal MRU observations made during testing remain in history.
+
+The final run passed all four cases:
+
+| Real event sequence | Release to verified target |
+| --- | ---: |
+| Forward; Tab up before Command up | 501 ms |
+| Forward; Command up before Tab up | 370 ms |
+| Repeated forward then reverse | 257 ms |
+| Reverse across the list boundary and back to current | 138 ms |
+
+All cases preserved the active tab while cycling and selected the highlighted
+target on release. The canvas showed 10 rows for 10 entries. Final checks
+confirmed hidden overlay, cleared cycle, enabled event tap, released Command
+and Shift, and successful restoration. These are individual synthetic-event
+smoke timings including read-back/polling overhead, not hardware-key latency
+percentiles.
+
+Earlier trial attempts exposed two harness assumptions: Dia's active-tab
+property can briefly lag a successful focus command, and synthetic modifier
+events need explicit flags. The harness now allows bounded focus settling and
+posts explicit modifier flags. No production change was needed; cleanup
+succeeded on failed attempts as well.
+
+### Rollback on this Mac
+
+The previous branch remains available. With a clean live working tree:
+
+```sh
+git -C ~/.hammerspoon switch fix/unified-command-tab-overlay-recovery
+hs -c 'hs.timer.doAfter(0.1, hs.reload)'
+```
+
+Reloading rebuilds in-memory history. To restore the optimized version, switch
+back to `live/unified-command-tab-optimized` and reload again.
+
+## Remaining limits
+
+The installed trial exercised Dia keyboard selection. Native Chrome activation,
+Spokenly, mouse selection, physical tab moves, and multiple displays have not
+received a live acceptance trial in this work. Their covered Lua behavior
+continues to pass the isolated suite; Chrome's selection code is unchanged.
 
 Aggregate background CPU and battery impact have not been established. The
 polling and observer cadence is unchanged; use the same live workload before
