@@ -233,6 +233,27 @@ test("full metadata preserves MRU and exact keys, updates titles and moved IDs",
     assert(script:find("set wantedTabIndex to 9", 1, true), "nonempty title refresh lost Chrome index")
 end)
 
+test("repeated snapshot rows preserve last window and last nonempty title/index", function()
+    local f = fixture()
+    f:observeBrowser(CHROME, "old-a", "a", "Alpha", 2)
+    f:observeBrowser(CHROME, "old-b", "b", "Bravo", 3)
+    press(f)
+    f:complete(f:task("metadata", CHROME),
+        "moved-a|a|9|Updated\nlast-a|a|7|\nw-b|b|3|Bravo")
+    f:flush()
+    rowsEqual(f, { tabKey(CHROME, "b"), tabKey(CHROME, "a") })
+    eq(f:rows()[2].title, "Updated")
+    eq(f:selectedKey(), tabKey(CHROME, "a"))
+    release(f)
+    local script = f.selectionScripts[1]
+    assert(script:find('"last-a"', 1, true))
+    assert(script:find("set wantedTabIndex to 9", 1, true))
+    f.frontmostApp = nil
+    press(f)
+    rowsEqual(f, { tabKey(CHROME, "a"), tabKey(CHROME, "b") })
+    eq(f:rows()[1].title, "Updated", "history must receive the same metadata as cycle")
+end)
+
 test("same-tab observation refreshes title without duplicates", function()
     local f = fixture()
     f:observeBrowser(CHROME, "w", "a", "Alpha")

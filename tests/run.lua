@@ -4,6 +4,7 @@
 -- Also works with Lua 5.2+ from any working directory: lua tests/run.lua
 local source = debug.getinfo(1, "S").source:sub(2)
 local directory = source:match("^(.*)/[^/]+$") or "."
+if directory:sub(1, 1) ~= "/" then directory = "./" .. directory end
 local hostGlobals, liveHS = _G, hs
 
 local function run(filename)

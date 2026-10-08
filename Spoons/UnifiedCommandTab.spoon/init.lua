@@ -344,6 +344,26 @@ local function refreshBrowserMetadata(browser, result)
         return
     end
 
+    -- A snapshot may contain far more tabs than the capped MRU history. Index
+    -- the target copies once instead of scanning every copy for every tab.
+    -- Keep the index local to this reconciliation so it cannot become stale.
+    local targetsByKey = {}
+    local function indexTarget(target)
+        if target then
+            local targets = targetsByKey[target.key]
+            if not targets then
+                targets = {}
+                targetsByKey[target.key] = targets
+            end
+            targets[#targets + 1] = target
+        end
+    end
+    for _, target in ipairs(history) do indexTarget(target) end
+    if cycle then
+        for _, target in ipairs(cycle.order) do indexTarget(target) end
+    end
+    indexTarget(lastObservedTarget)
+
     local seenTabs = {}
     for line in result:gmatch("[^\r\n]+") do
         local windowID, tabID, tabIndex, title
@@ -358,8 +378,9 @@ local function refreshBrowserMetadata(browser, result)
             -- windowID as target metadata for focusing, not as tab identity.
             local key = "browserTab:" .. browser.appID .. ":" .. tabID
             seenTabs[key] = true
-            local function refreshTarget(target)
-                if target and target.key == key then
+            local targets = targetsByKey[key]
+            if targets then
+                for _, target in ipairs(targets) do
                     target.windowID = windowID
                     if title and title ~= "" then
                         target.title = title
@@ -369,18 +390,6 @@ local function refreshBrowserMetadata(browser, result)
                     end
                 end
             end
-
-            for _, target in ipairs(history) do
-                refreshTarget(target)
-            end
-
-            if cycle then
-                for _, target in ipairs(cycle.order) do
-                    refreshTarget(target)
-                end
-            end
-
-            refreshTarget(lastObservedTarget)
         end
     end
 
@@ -1186,20 +1195,13 @@ local function moveWithinCycle()
         return false
     end
 
-    local count = #cycle.order
-    for _ = 1, count do
-        cycle.index = ((cycle.index - 1 + cycle.direction) % count) + 1
-        local candidate = cycle.order[cycle.index]
+    cycle.index = ((cycle.index - 1 + cycle.direction) % #cycle.order) + 1
 
-        -- Selection is intentionally deferred until Command is released.
-        -- While cycling, we only move the highlight in the snapshot so the
-        -- browser/app does not have to activate every intermediate target.
-        cycle.selected = candidate
-        scheduleOverlayUpdate()
-        return true
-    end
-
-    return false
+    -- Selection is intentionally deferred until Command is released.
+    -- While cycling, only move the highlight in the snapshot.
+    cycle.selected = cycle.order[cycle.index]
+    scheduleOverlayUpdate()
+    return true
 end
 
 local function beginCycle(direction)
@@ -1237,14 +1239,6 @@ local function beginCycle(direction)
     -- repairs entries that were first seen as "Untitled" without blocking the
     -- Command-Tab key event.
     refreshBrowserMetadataAsync()
-
-    -- Defer the initial canvas work until after the event callback returns.
-    -- This keeps Hammerspoon out of the keyboard delivery path.
-    if overlayUpdateTimer then
-        overlayUpdateTimer:stop()
-        overlayUpdateTimer = nil
-    end
-    scheduleOverlayUpdate()
 
     return true
 end
