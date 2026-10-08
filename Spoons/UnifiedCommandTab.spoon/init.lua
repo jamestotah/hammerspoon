@@ -1113,32 +1113,33 @@ end using terms from
         script = string.format([[
 tell application id %s
     set wantedWindowID to %s
+    set wantedTabID to %s
 
-    -- Dia exposes a stable text window ID, so avoid walking every window
-    -- when the tab is still in its original window.
+    -- Resolve by stable ID in the browser. Reading each tab ID separately
+    -- costs one Apple Event per tab and stalls selection in large windows.
     try
         set theWindow to first window whose id is wantedWindowID
-        repeat with theTab in tabs of theWindow
-            if (id of theTab as text) is %s then
-                focus theTab
-                return true
-            end if
-        end repeat
+        set theTab to first tab of theWindow whose id is wantedTabID
+        if (id of theTab as text) is wantedTabID then
+            focus theTab
+            return true
+        end if
     end try
 
     -- Fallback for a tab that was moved to another window.
     repeat with theWindow in windows
-        repeat with theTab in tabs of theWindow
-            if (id of theTab as text) is %s then
+        try
+            set theTab to first tab of theWindow whose id is wantedTabID
+            if (id of theTab as text) is wantedTabID then
                 focus theTab
                 return true
             end if
-        end repeat
+        end try
     end repeat
     return false
 end tell
 ]], quoteAppleScriptString(browser.appID), quoteAppleScriptString(target.windowID),
-            quoteAppleScriptString(target.tabID), quoteAppleScriptString(target.tabID))
+            quoteAppleScriptString(target.tabID))
     end
 
     local ok, result = hs.osascript.applescript(script)
