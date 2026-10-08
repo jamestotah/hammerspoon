@@ -32,7 +32,7 @@ with a most-recently-used list containing:
 - ordinary application windows;
 - active tabs in Google Chrome;
 - active tabs in Dia; and
-- Spokenly, when it has a visible window.
+- Spokenly, when it has windows.
 
 Hold `⌘` and press `Tab` to move forward, or `⌘⇧Tab` to move backward. The
 switcher draws a lightweight overlay, updates browser metadata asynchronously,
@@ -72,9 +72,12 @@ permissions, troubleshooting, and extension points.
 │   ├── config.example.json               # Safe, portable layout example
 │   └── config.json                       # Local state; ignored by Git
 ├── LICENSE                               # MIT license
+├── scripts/                              # Opt-in benchmarks and native trials
+├── tests/                                # Isolated Lua regression suite
 └── docs/
     ├── arrange-desktop.md
-    └── unified-command-tab.md
+    ├── unified-command-tab.md
+    └── unified-command-tab-verification.md # Tests, measurements, and rollback
 ```
 
 ## Privacy and portability
