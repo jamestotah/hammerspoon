@@ -95,14 +95,51 @@ indexing target copies: about 58 times fewer. One run measured 13.62 ms versus
 1.05 ms of Lua CPU time; instruction counts are the more repeatable comparison.
 This does not measure AppleScript metadata-query time or idle CPU consumption.
 
+## Native Dia focus test
+
+This is an opt-in test that changes focus temporarily. Run it only when a brief
+interruption is acceptable:
+
+```sh
+hs -t 90 -c 'dofile("/absolute/checkout/scripts/verify_dia_focus.lua")()'
+```
+
+The script captures the candidate's unmodified production selection scripts
+using the isolated fixture, then executes them through
+`hs.osascript.applescript`. It checks the active tab/window and whether Dia is
+frontmost. It snapshots each window's original selected tab, restores selections
+back-to-front even after a test failure, and restores the original application
+and window. It does not install a switcher or open, close, or move any tabs.
+
+On October 8, 2026, the full test passed with two Dia windows containing 16 and
+193 tabs:
+
+| Case | Selection command | Command plus verification |
+| --- | ---: | ---: |
+| First tab in large window | 805 ms | 889 ms |
+| Last tab in large window | 813 ms | 913 ms |
+| Other window's selected tab | 468 ms | 565 ms |
+| Wrong existing window fallback | 769 ms | 855 ms |
+| Missing window fallback | 219 ms | 458 ms |
+| Missing tab, no substitute | 137 ms | 248 ms |
+
+All six cases passed and restoration checks confirmed the original Dia
+selections, application, and frontmost window. These are individual smoke-test
+measurements, not medians or key-release latency. The wrong-window test uses a
+target absent from the recorded window but present in another open window; it
+does not physically move a tab. An initial invocation hit the CLI's default
+four-second receive timeout after four passing cases and restored the original
+state; its final case diagnostic was unavailable. The complete rerun used the
+90-second CLI timeout shown above.
+
 ## Live acceptance and remaining limits
 
-Native focus testing and installation into the live configuration were deferred
-at the user's request. Before rollout, identify the currently loaded switcher
-version, then verify actual release-to-focus behavior for Dia and Chrome,
-ordinary windows, Spokenly, moved/closed tabs, and multiple windows/displays.
-Check mouse selection during reconciliation, rapid cycling, both key-release
-orders, and overlay recovery. Reloading rebuilds in-memory history.
+Native Dia selection is verified; installation and an actual switcher trial
+remain pending. Before rollout, identify the currently loaded switcher version,
+then verify actual release-to-focus behavior for Dia and Chrome, ordinary
+windows, Spokenly, moved/closed tabs, and multiple windows/displays. Check mouse
+selection during reconciliation, rapid cycling, both key-release orders, and
+overlay recovery. Reloading rebuilds in-memory history.
 
 Aggregate background CPU and battery impact have not been established. The
 polling and observer cadence is unchanged; use the same live workload before
