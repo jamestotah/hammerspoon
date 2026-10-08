@@ -2,7 +2,6 @@
 -- Exercise browser-history cleanup, stable row selection, stale window IDs,
 -- missed Command-release recovery, and activation-error cleanup via public paths.
 -- Value: protects stable click identity and clean cycle recovery; fails_when=rows resolve by index or finish leaves stale cycle state; why_new=prior test missed reordered and mismatched mouse release paths; seam=none
-local realHS = hs
 local now = 0
 local tasks = {}
 local browserPoll
@@ -112,9 +111,11 @@ local mockHS = {
             end
             return timer
         end,
-        doAfter = function(_, callback)
-            table.insert(deferredCallbacks, callback)
-            return { stop = function() end }
+        doAfter = function(delay, callback)
+            local timer = { due = now + delay, callback = callback, stopped = false }
+            function timer:stop() self.stopped = true end
+            table.insert(deferredCallbacks, timer)
+            return timer
         end,
     },
     task = {
@@ -216,9 +217,17 @@ local function pollActiveTab()
 end
 
 local function flushDeferredCallbacks()
-    while #deferredCallbacks > 0 do
-        local callback = table.remove(deferredCallbacks, 1)
-        callback()
+    local ready = deferredCallbacks
+    deferredCallbacks = {}
+    for _, timer in ipairs(ready) do
+        if not timer.stopped then
+            if timer.due <= now then
+                timer.stopped = true
+                timer.callback()
+            else
+                table.insert(deferredCallbacks, timer)
+            end
+        end
     end
 end
 
@@ -232,9 +241,11 @@ local function findCanvasRow(canvas, targetID)
 end
 
 local ok, err = xpcall(function()
-    hs = mockHS
-    local modulePath = testSourcePath:gsub("/tests/[^/]+$", "/Spoons/UnifiedCommandTab.spoon/init.lua")
-    local switcher = dofile(modulePath)
+    local testDirectory = testSourcePath:match("^(.*)/[^/]+$") or "."
+    local modulePath = testDirectory .. "/../Spoons/UnifiedCommandTab.spoon/init.lua"
+    local environment = setmetatable({ hs = mockHS }, { __index = _G })
+    environment._G = environment
+    local switcher = assert(loadfile(modulePath, "t", environment))()
     assert(switcher.name == "UnifiedCommandTab" and switcher.version,
         "module did not expose Spoon metadata")
     switcher:start()
@@ -615,15 +626,34 @@ local ok, err = xpcall(function()
 
     -- If Dia signals while a full Chrome-then-Dia snapshot is in progress,
     -- that snapshot's upcoming Dia read satisfies the queued notification.
+    -- Finish the prior cycle's Dia-first read before setting up this order.
+    -- Otherwise a presence read after that already-read Dia is legitimate.
+    while true do
+        local pendingMetadata
+        for _, task in ipairs(tasks) do
+            if task.script:find("set tabRecords to {}", 1, true)
+                or task.script:find("set tabPresenceRecords to {}", 1, true) then
+                pendingMetadata = task
+                break
+            end
+        end
+        if not pendingMetadata then break end
+        completeTask(true, pendingMetadata.script:find('tell application id "com.google.Chrome"', 1, true)
+            and "window-1|chrome-open|1|Open Chrome tab" or "dia-window|dia-open|Open Dia tab")
+    end
     frontmostApp = chrome
     chromeRunning = true
     now = 13.2
     browserPoll()
+    assert(tasks[1].script:find('tell application id "com.google.Chrome"', 1, true)
+        and tasks[1].script:find("set tabRecords to {}", 1, true),
+        "duplicate-read test needs a fresh Chrome-first full snapshot")
     diaObserver:fire(diaTabList, "AXSelectedChildrenChanged")
     completeTask(true, "window-1|tab-a|1|Tab A\nwindow-2|tab-b|1|Tab B")
     completeTask(true, "dia-window|dia-tab|Dia tab")
     for _, task in ipairs(tasks) do
-        assert(not task.script:find("set tabRecords to {}", 1, true),
+        assert(not task.script:find("set tabRecords to {}", 1, true)
+            and not task.script:find("set tabPresenceRecords to {}", 1, true),
             "Dia event queued a redundant read already covered by the full snapshot")
     end
     pollActiveTab()
@@ -631,16 +661,21 @@ local ok, err = xpcall(function()
     -- Keep another browser running so the stop-callback check can verify that
     -- a late Chrome completion does not continue the metadata-read chain.
     now = 14.8
-    diaObserver:fire(diaTabList, "AXSelectedChildrenChanged")
+    frontmostApp = chrome
+    assert(chromeRunning and diaRunning, "stop-chain test needs both browsers running")
+    browserPoll()
     local pendingMetadata
     for index, task in ipairs(tasks) do
-        if task.script:find("set tabPresenceRecords to {}", 1, true) then
+        if task.script:find("set tabRecords to {}", 1, true) then
             pendingMetadata = table.remove(tasks, index)
             break
         end
     end
     assert(pendingMetadata, "expected a pending metadata read before stop")
+    assert(pendingMetadata.script:find('tell application id "com.google.Chrome"', 1, true),
+        "stop-chain test must stop Chrome before the queued Dia read starts")
     switcher:stop()
+    assert(pendingMetadata.terminated, "stop did not terminate the full metadata task")
     assert(not diaObserver.running, "Dia tab observer remained active after stop")
     local pendingCount = #tasks
     diaObserver:fire(diaTabList, "AXSelectedChildrenChanged")
@@ -651,6 +686,5 @@ local ok, err = xpcall(function()
         "stop did not stop the Command-release watchdog")
 end, debug.traceback)
 
-hs = realHS
 if not ok then error(err) end
 print("Unified Command-Tab regression: PASS")
