@@ -49,6 +49,10 @@ or off. The setting is stored using Hammerspoon's settings API under
 Disabling or stopping during a cycle commits the highlighted target. History is
 in memory and is rebuilt after a configuration reload.
 
+To start Hammerspoon automatically after a computer restart, enable its
+**Launch at login** preference. History rebuilds from tabs you visit; it does not
+restore every previously visited tab after a restart.
+
 ## Permissions
 
 Accessibility permission is required for event monitoring and window focus.
@@ -76,11 +80,18 @@ are coalesced, and generation checks prevent stale observations from restoring
 tabs removed by a newer snapshot. Snapshot reconciliation indexes the current
 target copies once rather than scanning history for every open tab.
 
+When multiple Dia processes share a bundle ID, the switcher uses PID-addressed
+JavaScript for Automation (JXA) to target the foreground or window-owning
+instance rather than a windowless instance. It resolves the process for each
+operation, including selection, and does not persist PIDs across restarts. The
+single-instance AppleScript path is unchanged.
+
 Cycling uses cached targets and coalesces overlay redraws onto the next run-loop
 turn. Completion clears cycle state and hides the overlay before attempting
-activation. Browser activation uses synchronous `hs.osascript.applescript`;
-only successful selections become the most recent target. Dia resolves the tab
-by stable ID in its recorded window, then searches other windows if needed.
+activation. Browser activation uses synchronous `hs.osascript.applescript`, or
+`hs.osascript.javascript` for duplicate Dia instances. Only successful selections
+become the most recent target. Dia resolves the tab by stable ID in its recorded
+window, then searches other windows if needed.
 It does not request each tab's ID separately. Chrome validates its cached tab
 index against the stable ID before selecting it.
 
