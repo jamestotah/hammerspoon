@@ -14,9 +14,9 @@
 return function(modulePath, options)
     options = options or {}
     local f = {
-        now = 0, timers = {}, tasks = {}, apps = {}, windows = {},
+        now = 0, timers = {}, tasks = {}, apps = {}, appInstances = {}, windows = {},
         canvases = {}, observers = {}, taps = {}, filters = {}, watchers = {},
-        selectionScripts = {}, focuses = {}, activations = {}, operations = {},
+        selectionScripts = {}, selectionLanguages = {}, focuses = {}, activations = {}, operations = {},
         settings = {}, settingsWrites = {}, alerts = {}, modifiers = {},
         counts = {
             taskCreated = 0, taskStarted = 0, taskTerminated = 0, lateDeliveries = 0,
@@ -85,11 +85,11 @@ return function(modulePath, options)
     f.diaWindowAX = axNode("AXWindow", {}, { f.diaTabList })
     f.diaApplicationAX = axNode("AXApplication")
 
-    function f:newApp(bundleID, name)
+    function f:newApp(bundleID, name, pid)
         local app = { windows = {}, running = true, identity = bundleID or name }
         function app:bundleID() return bundleID end
         function app:name() return name end
-        function app:pid() return 4321 end
+        function app:pid() return pid or 4321 end
         function app:allWindows() return self.windows end
         function app:activate()
             f.counts.activate = f.counts.activate + 1
@@ -97,6 +97,7 @@ return function(modulePath, options)
             record("activate", self.identity)
         end
         self.apps[app.identity], self.apps[name] = app, app
+        table.insert(self.appInstances, app)
         return app
     end
 
@@ -267,6 +268,13 @@ return function(modulePath, options)
         alert = { show = function(text) table.insert(f.alerts, text) end },
         application = {
             get = function(id) local app = f.apps[id]; return app and app.running and app or nil end,
+            applicationsForBundleID = function(id)
+                local apps = {}
+                for _, app in ipairs(f.appInstances) do
+                    if app.running and app:bundleID() == id then apps[#apps + 1] = app end
+                end
+                return apps
+            end,
             frontmostApplication = function() return f.frontmostApp end,
             watcher = {
                 activated = "activated", launched = "launched", terminated = "terminated",
@@ -293,11 +301,15 @@ return function(modulePath, options)
             doEvery = function(interval, callback) return timer(interval, callback, interval) end,
         },
         task = { new = function(_, callback, args)
-            local script = args[2]
-            local kind = script:find("set tabPresenceRecords to {}", 1, true) and "presence"
-                or script:find("set tabRecords to {}", 1, true) and "metadata" or "active"
+            local script = args[#args]
+            local kind = (script:find("set tabPresenceRecords to {}", 1, true)
+                    or script:find("var tabPresenceRecords = []", 1, true)) and "presence"
+                or (script:find("set tabRecords to {}", 1, true)
+                    or script:find("var tabRecords = []", 1, true)) and "metadata" or "active"
             local task = { script = script, kind = kind, callback = callback,
-                appID = script:match('tell application id "([^"]+)"') }
+                language = args[1] == "-l" and args[2] or "AppleScript",
+                appID = script:match('tell application id "([^"]+)"')
+                    or (script:find("Application(", 1, true) and "company.thebrowser.dia") }
             f.counts.taskCreated = f.counts.taskCreated + 1
             function task:start()
                 assert(not self.started, "task started twice")
@@ -314,6 +326,13 @@ return function(modulePath, options)
         end },
         osascript = { applescript = function(script)
             table.insert(f.selectionScripts, script)
+            table.insert(f.selectionLanguages, "AppleScript")
+            record("select", script)
+            if f.selectionError then error(f.selectionError) end
+            return true, true
+        end, javascript = function(script)
+            table.insert(f.selectionScripts, script)
+            table.insert(f.selectionLanguages, "JavaScript")
             record("select", script)
             if f.selectionError then error(f.selectionError) end
             return true, true

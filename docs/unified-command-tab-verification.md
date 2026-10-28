@@ -206,3 +206,53 @@ an active-tab task delivered after `stop()` can alter history because that
 callback lacks the metadata task's lifecycle guard. The optimization does not
 change that path. A follow-up should test stop/restart with a late active-task
 completion and prevent it from mutating history or clearing a newer task.
+
+## Dia recovery after login
+
+When multiple Dia processes share a bundle ID, macOS can route bundle-ID
+AppleScript commands to a windowless instance. In the October 27, 2026 failure,
+the live switcher captured zero Dia tabs despite Dia being frontmost and
+Accessibility being enabled. Bundle-ID window queries returned
+`AppleEvent handler failed (-10000)`, while PID-addressed JavaScript for
+Automation (JXA) queries to the window-owning process succeeded.
+
+When duplicate instances are present, the switcher now targets the foreground
+Dia process, or a window-owning process if Dia is in the background. Active-tab
+reads, full snapshots, presence snapshots, selection, and accessibility
+observation use that process. The switcher resolves current PIDs rather than
+persisting them. The single-instance AppleScript path is unchanged.
+
+Regression coverage includes duplicate instances with misleading bundle lookup,
+background snapshots, process replacement, and cold startup where both processes
+start before Hammerspoon and windows appear later. Run:
+
+```sh
+hs -c 'dofile("/Users/totah/.hammerspoon/tests/run.lua")'
+```
+
+All 26 behavior scenarios and the historical regression passed.
+
+A read-only live check runs asynchronously while Dia remains frontmost:
+
+```sh
+hs -c 'dofile("/absolute/checkout/scripts/verify_dia_capture.lua")("/absolute/writable/capture-report.json")'
+```
+
+Wait up to 15 seconds for the JSON report, then check `passed`. The report
+contains counts, not titles, URLs, or tab identifiers. The check does not change
+focus, history, settings, or tabs.
+
+Before the fix was installed, the check failed after 15 seconds with zero
+captured tabs. After the fixed configuration was reloaded, it passed with both
+Dia processes still running. Production-generated JXA full and presence scripts
+each returned 152 tabs. Current-tab selection, missing-window lookup fallback,
+and missing-tab rejection also passed without changing the selected tab.
+All-tabs snapshot counts differ from MRU history counts: only visited tabs enter
+history.
+
+Hammerspoon's launch-at-login setting was disabled on this Mac. It was enabled
+with `hs.autoLaunch(true)` and verified with `hs.autoLaunch()` so the configuration
+starts at login. This is a macOS/Hammerspoon preference, not a repository setting.
+Verification covered live reload, operation with duplicate processes, and
+simulated startup and process replacement. A full computer reboot was not
+performed.

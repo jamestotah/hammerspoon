@@ -195,6 +195,85 @@ local function browserForApplication(app)
     return BROWSERS[app:bundleID()]
 end
 
+local function diaApplication()
+    local appID = BROWSERS["company.thebrowser.dia"].appID
+    local instances = hs.application.applicationsForBundleID
+        and hs.application.applicationsForBundleID(appID) or {}
+    if #instances <= 1 then
+        return hs.application.get(appID), false
+    end
+
+    -- Login or automation tools can start a second, windowless Dia process.
+    -- Launch Services may route a bundle-ID Apple Event to that process rather
+    -- than the one owning the user's tabs. Resolve afresh; PIDs are not durable.
+    local frontmost = hs.application.frontmostApplication()
+    if browserForApplication(frontmost) == BROWSERS[appID] then
+        return frontmost, true
+    end
+    for _, app in ipairs(instances) do
+        if #app:allWindows() > 0 then
+            return app, true
+        end
+    end
+    return instances[1], true
+end
+
+local function diaAutomationPID(browser)
+    if browser.mode == "dia" then
+        local app, multiple = diaApplication()
+        if app and multiple then return app:pid() end
+    end
+end
+
+local function quoteJavaScriptString(value)
+    return '"' .. tostring(value):gsub('[%z\1-\31\\"]', function(char)
+        return string.format("\\u%04x", char:byte())
+    end) .. '"'
+end
+
+local function diaReadScript(pid, kind)
+    local body
+    if kind == "active" then
+        body = [[
+    var windows = app.windows();
+    if (!windows.length) return "";
+    var theWindow = windows[0];
+    var theTab = theWindow.activeTab();
+    return theWindow.id() + "|" + theTab.id() + "|" + theTab.title();]]
+    elseif kind == "presence" then
+        body = [[
+    var tabPresenceRecords = [];
+    app.windows().forEach(function(theWindow) {
+        var windowID = theWindow.id();
+        theWindow.tabs.id().forEach(function(tabID) {
+            tabPresenceRecords.push(windowID + "|" + tabID + "|");
+        });
+    });
+    return tabPresenceRecords.join("\n");]]
+    else
+        body = [[
+    var tabRecords = [];
+    app.windows().forEach(function(theWindow) {
+        var windowID = theWindow.id();
+        var tabIDs = theWindow.tabs.id();
+        var titles = theWindow.tabs.title();
+        tabIDs.forEach(function(tabID, index) {
+            tabRecords.push(windowID + "|" + tabID + "|" + titles[index]);
+        });
+    });
+    return tabRecords.join("\n");]]
+    end
+    return string.format("(function() {\n    var app = Application(%d);\n%s\n})()", pid, body)
+end
+
+local function browserReadArguments(browser, kind, appleScript)
+    local pid = diaAutomationPID(browser)
+    if pid then
+        return { "-l", "JavaScript", "-e", diaReadScript(pid, kind) }
+    end
+    return { "-e", appleScript }
+end
+
 local function targetForSwitchableApplication(app)
     if not app then
         return nil
@@ -527,9 +606,9 @@ local function refreshBrowserMetadataAsync(requestedBrowser, presenceOnly)
             end
             readNextBrowser()
             return true
-        end, { "-e", presenceOnly
+        end, browserReadArguments(browser, presenceOnly and "presence" or "metadata", presenceOnly
             and browserTabPresenceReadScript(browser)
-            or browserMetadataReadScript(browser) })
+            or browserMetadataReadScript(browser)))
         browserMetadataReadTask:start()
     end
 
@@ -604,7 +683,7 @@ local function stopDiaTabObserver()
 end
 
 local function ensureDiaTabObserver(forceRebind)
-    local app = hs.application.get(BROWSERS["company.thebrowser.dia"].appID)
+    local app = diaApplication()
     if not app or not hs.axuielement or not hs.axuielement.observer then
         if not app then
             stopDiaTabObserver()
@@ -683,7 +762,7 @@ local function readBrowserTargetAsync(browser, callback)
             callback(parseBrowserTarget(browser, stdOut))
         end
         return true
-    end, { "-e", browserReadScript(browser) })
+    end, browserReadArguments(browser, "active", browserReadScript(browser)))
     browserReadTask:start()
 end
 
@@ -1081,6 +1160,39 @@ end
 local function selectBrowserTarget(target)
     local browser = target.browser
     local script
+
+    local pid = diaAutomationPID(browser)
+    if pid then
+        -- Use the same PID routing as discovery. Bundle-ID selection would
+        -- otherwise still fail after successfully capturing the user's tabs.
+        script = string.format([[
+(function() {
+    var app = Application(%d);
+    var wantedWindowID = %s;
+    var wantedTabID = %s;
+    function focusInWindow(theWindow) {
+        try {
+            var theTab = theWindow.tabs.whose({id: wantedTabID})[0];
+            if (theTab.id() === wantedTabID) {
+                app.focus(theTab);
+                return true;
+            }
+        } catch (error) {}
+        return false;
+    }
+    try {
+        if (focusInWindow(app.windows.whose({id: wantedWindowID})[0])) return true;
+    } catch (error) {}
+    var windows = app.windows();
+    for (var i = 0; i < windows.length; i++) {
+        if (focusInWindow(windows[i])) return true;
+    }
+    return false;
+})()
+]], pid, quoteJavaScriptString(target.windowID), quoteJavaScriptString(target.tabID))
+        local ok, result = hs.osascript.javascript(script)
+        return ok and (result == true or result == "true")
+    end
 
     if browser.mode == "chrome" then
         script = string.format([[
