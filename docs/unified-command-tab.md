@@ -49,9 +49,34 @@ or off. The setting is stored using Hammerspoon's settings API under
 Disabling or stopping during a cycle commits the highlighted target. History is
 in memory and is rebuilt after a configuration reload.
 
+The menu also has **Browser tab favicons**, off by default. Its choice persists
+under `unifiedCmdTab.favicons`; configurations without the menu can set that
+Hammerspoon setting to `true` before starting the Spoon. When enabled, the
+switcher prefetches icons from Chrome or Dia's local default-profile favicon
+database, keyed by page URL, and caches them in memory. This usually uses the
+same icon the browser displays, including custom icon paths. When several
+sizes are cached, it prefers the one closest to 64 pixels for the 32-point row
+icon. If a page's icon
+is not cached yet, it can temporarily reuse another visited tab's icon from the
+same browser and origin (scheme, host, and port). The page-specific lookup is
+retried and takes precedence when available. Database reads are
+asynchronous and read-only; an unavailable or inconsistent database falls back
+to requesting `/favicon.ico` directly from the page's origin, without the page
+path or query. That request contacts the site (and may follow redirects), not a
+third-party favicon service. Other browser profiles, pages with dynamic icons,
+non-web URLs, or unavailable icons may still use the browser application icon
+or a different icon. Failed lookups are retried after a minute. Browser URLs
+are read alongside tab titles even when the option is off, but no favicon
+lookups or requests are made until it is enabled.
+
 To start Hammerspoon automatically after a computer restart, enable its
 **Launch at login** preference. History rebuilds from tabs you visit; it does not
 restore every previously visited tab after a restart.
+
+**Browser tab title first** is on by default: browser rows show the page title
+above the browser name, while other targets keep their existing order. Turn it
+off in the menu to show the browser name first. The choice persists under
+`unifiedCmdTab.tabTitleFirst`.
 
 ## Permissions
 

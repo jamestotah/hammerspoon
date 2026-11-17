@@ -14,6 +14,9 @@ local axObservers = {}
 local deferredCallbacks = {}
 local selectionScripts = {}
 local canvasInstances = {}
+local settings = {}
+local faviconRequests = {}
+local faviconTasks = {}
 local commandDown = false
 local selectionShouldThrow = false
 local windowLookup = {}
@@ -67,7 +70,9 @@ local legacyWindow = {
 local frontmostApp = chrome
 local mockHS = {
     logger = { new = function() return {} end },
-    settings = { get = function() return nil end },
+    settings = { get = function(key) return settings[key] end, set = function(key, value) settings[key] = value end },
+    http = { asyncGet = function(url, _, callback) table.insert(faviconRequests, { url = url, callback = callback }) end },
+    base64 = { encode = function(data) return data end },
     application = {
         frontmostApplication = function() return frontmostApp end,
         get = function(id)
@@ -119,7 +124,13 @@ local mockHS = {
         end,
     },
     task = {
-        new = function(_, callback, args)
+        new = function(path, callback, args)
+            if path == "/usr/bin/sqlite3" then
+                local task = { callback = callback, args = args }
+                function task:setInput(input) self.input = input end
+                function task:start() table.insert(faviconTasks, self); return self end
+                return task
+            end
             local task = { script = args[2], callback = callback }
             function task:start() tasks[#tasks + 1] = self end
             function task:terminate() self.terminated = true end
@@ -180,13 +191,20 @@ local mockHS = {
             return canvas
         end,
     },
-    image = { imageFromAppBundle = function() return nil end },
+    image = { imageFromAppBundle = function() return "app-icon" end, imageFromURL = function(url)
+        if url:match(",image$") then return "favicon" end
+        if url:match(",other$") then return "other-favicon" end
+    end },
 }
 
 local function completeTask(isMetadata, output)
     for index, task in ipairs(tasks) do
         if task.script:find("set records to {}", 1, true) then
             error("metadata script uses AppleScript's reserved `records` identifier")
+        end
+        if task.script:find("set tabURL to", 1, true) then
+            assert(task.script:find("ASCII character 9", 1, true),
+                "AppleScript must use an explicit tab character, not the browser's tab class")
         end
         local taskIsMetadata = task.script:find("set tabRecords to {}", 1, true) ~= nil
             or task.script:find("set tabPresenceRecords to {}", 1, true) ~= nil
@@ -283,6 +301,77 @@ local ok, err = xpcall(function()
     assert(canvas and canvas.visible, "Command-Tab did not show the history overlay")
     local clickedTargetID = "target:browserTab:com.google.Chrome:tab-b"
     assert(findCanvasRow(canvas, clickedTargetID), "expected Chrome history row was not rendered")
+    local function browserRowLines()
+        local row = assert(findCanvasRow(canvas, clickedTargetID))
+        local primary, secondary
+        for _, element in ipairs(canvas.elements) do
+            if element.type == "text" and element.frame.x == 100 then
+                if element.frame.y == row.frame.y + 6 then primary = element.text end
+                if element.frame.y == row.frame.y + 24 then secondary = element.text end
+            end
+        end
+        return primary, secondary
+    end
+    local primary, secondary = browserRowLines()
+    assert(primary == "Tab B" and secondary == "Google Chrome", "tab title should be first by default")
+    local titleItem = switcher:addMenuItems({})[4]
+    assert(titleItem.title == "Browser tab title first" and titleItem.checked, "title order toggle should default on")
+    titleItem.fn()
+    assert(settings["unifiedCmdTab.tabTitleFirst"] == false, "title order preference was not saved")
+    flushDeferredCallbacks()
+    primary, secondary = browserRowLines()
+    assert(primary == "Google Chrome" and secondary == "Tab B", "disabled title order should show browser first")
+    switcher:addMenuItems({})[4].fn()
+    flushDeferredCallbacks()
+    local menu = switcher:addMenuItems({})
+    local faviconItem = menu[3]
+    assert(faviconItem.title == "Browser tab favicons" and not faviconItem.checked,
+        "favicons should be opt-in")
+    assert(#faviconRequests == 0, "disabled favicons made network requests")
+    faviconItem.fn()
+    assert(settings["unifiedCmdTab.favicons"] == true, "favicon preference was not saved")
+    mockHS.fs = { attributes = function() return {} end }
+    completeTask(true, "window-1|tab-a|1|https://example.com/private?secret=1\tTab A\nwindow-2|tab-b|1|chrome://settings\tTab B\nwindow-3|tab-c|1|https://example.com/other\tTab C")
+    flushDeferredCallbacks()
+    assert(#faviconTasks == 2 and #faviconRequests == 0,
+        "web pages should prefetch their own browser-cached icons without network requests")
+    assert(not faviconTasks[1].input:find("secret", 1, true), "page URL should be encoded in sqlite input")
+    assert(faviconTasks[1].input:find("abs(b.width - 64)", 1, true),
+        "browser cache lookup should prefer a Retina-sized icon")
+    faviconTasks[1].callback(0, "696D616765\n")
+    faviconTasks[2].callback(1, "")
+    assert(#faviconRequests == 0, "a sibling tab's cached icon should avoid the origin request")
+    flushDeferredCallbacks()
+    local faviconCount = 0
+    for _, element in ipairs(canvas.elements) do
+        if element.type == "image" and element.image == "favicon" then faviconCount = faviconCount + 1 end
+    end
+    assert(faviconCount == 2, "same-site tabs should share an icon while the page-specific icon is unavailable")
+    now = now + 61
+    switcher:addMenuItems({})[3].fn()
+    switcher:addMenuItems({})[3].fn()
+    assert(#faviconTasks == 3, "a provisional site icon should not prevent page-specific retries")
+    faviconTasks[3].callback(0, "6F74686572\n")
+    flushDeferredCallbacks()
+    local exactFound = false
+    for _, element in ipairs(canvas.elements) do
+        if element.type == "image" and element.image == "other-favicon" then exactFound = true end
+    end
+    assert(exactFound, "page-specific icon should replace the shared site icon")
+    now = now - 61
+    switcher:addMenuItems({})[3].fn()
+    assert(settings["unifiedCmdTab.favicons"] == false, "favicon preference did not turn off")
+    flushDeferredCallbacks()
+    for _, element in ipairs(canvas.elements) do
+        assert(element.image ~= "favicon" and element.image ~= "other-favicon", "disabled favicon remained visible")
+    end
+    keyHandler({ getType = function() return mockHS.eventtap.event.types.flagsChanged end,
+        getFlags = function() return { cmd = false } end })
+    keyHandler({ getType = function() return mockHS.eventtap.event.types.keyDown end,
+        getKeyCode = function() return mockHS.keycodes.map.tab end,
+        getFlags = function() return { cmd = true } end })
+    flushDeferredCallbacks()
+    canvas = canvasInstances[#canvasInstances]
     local selectionCount = #selectionScripts
     canvas.mouseCallbackFn(canvas, "mouseDown", clickedTargetID)
     -- Prune the current first row while the pointer is down. Tab B shifts from

@@ -207,8 +207,9 @@ return function(modulePath, options)
             local key = element.id and element.id:match("^target:(.+)$")
             if element.type == "rectangle" and key then
                 local row = { key = key, selected = element.fillColor.red ~= nil }
+                local titleOffset = key:match("^browserTab:") and self.settings["unifiedCmdTab.tabTitleFirst"] ~= false and 6 or 24
                 for _, text in ipairs(canvas.elements) do
-                    if text.type == "text" and text.frame.y == element.frame.y + 24 then row.title = text.text end
+                    if text.type == "text" and text.frame.y == element.frame.y + titleOffset then row.title = text.text end
                 end
                 table.insert(result, row)
             end
