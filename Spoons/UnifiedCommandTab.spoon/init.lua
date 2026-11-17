@@ -20,6 +20,8 @@ obj.license = "MIT - https://opensource.org/licenses/MIT"
 obj.logger = hs.logger.new("UnifiedCommandTab")
 
 local SETTINGS_KEY = "unifiedCmdTab.enabled"
+local FAVICONS_SETTINGS_KEY = "unifiedCmdTab.favicons"
+local TAB_TITLE_FIRST_SETTINGS_KEY = "unifiedCmdTab.tabTitleFirst"
 -- Browser state comes from AppleScript, which is relatively expensive. Run it
 -- out of process and at a human-scale cadence so it never blocks key events.
 local POLL_INTERVAL = 0.50
@@ -61,6 +63,11 @@ local applicationWatcher = nil
 local menuRefresh = nil
 local overlay = nil
 local iconCache = {}
+local faviconCache = {}
+local siteFaviconCache = {}
+local faviconCacheSize = 0
+local faviconsEnabled = false
+local tabTitleFirst = true
 local overlayUpdateTimer = nil
 local overlayVisible = false
 local enabled = true
@@ -76,6 +83,7 @@ local diaTabObserverRebindTimer = nil
 local diaTabObserverGeneration = 0
 local scheduleOverlayUpdate
 local finishCycle
+local prefetchFavicon
 
 local OVERLAY_WIDTH = 680
 local MAX_VISIBLE_ROWS = 12
@@ -132,6 +140,7 @@ local function remember(target)
     end
 
     table.insert(history, 1, copyTarget(target))
+    if prefetchFavicon then prefetchFavicon(target) end
     lastObservedKey = target.key
     lastObservedTarget = copyTarget(target)
 
@@ -171,14 +180,17 @@ local function observe(target)
         for _, historicalTarget in ipairs(history) do
             if historicalTarget.key == target.key then
                 historicalTarget.title = target.title
+                historicalTarget.url = target.url
                 break
             end
         end
 
         if lastObservedTarget and lastObservedTarget.key == target.key then
             lastObservedTarget.title = target.title
+            lastObservedTarget.url = target.url
         end
     end
+    if prefetchFavicon then prefetchFavicon(target) end
 end
 
 local function quoteAppleScriptString(value)
@@ -239,7 +251,9 @@ local function diaReadScript(pid, kind)
     if (!windows.length) return "";
     var theWindow = windows[0];
     var theTab = theWindow.activeTab();
-    return theWindow.id() + "|" + theTab.id() + "|" + theTab.title();]]
+    var url = "";
+    try { url = theTab.url(); } catch (e) {}
+    return theWindow.id() + "|" + theTab.id() + "|" + url + "\t" + theTab.title();]]
     elseif kind == "presence" then
         body = [[
     var tabPresenceRecords = [];
@@ -257,8 +271,10 @@ local function diaReadScript(pid, kind)
         var windowID = theWindow.id();
         var tabIDs = theWindow.tabs.id();
         var titles = theWindow.tabs.title();
+        var urls = [];
+        try { urls = theWindow.tabs.url(); } catch (e) {}
         tabIDs.forEach(function(tabID, index) {
-            tabRecords.push(windowID + "|" + tabID + "|" + titles[index]);
+            tabRecords.push(windowID + "|" + tabID + "|" + (urls[index] || "") + "\t" + titles[index]);
         });
     });
     return tabRecords.join("\n");]]
@@ -311,11 +327,15 @@ tell application id %s
 
     set theWindow to front window
     set theTab to active tab of theWindow
+    set tabURL to ""
+    try
+        set tabURL to URL of theTab as text
+    end try
 
     return (id of theWindow as text) & "|" & ¬
            (id of theTab as text) & "|" & ¬
            (active tab index of theWindow as text) & "|" & ¬
-           (title of theTab as text)
+           tabURL & (ASCII character 9) & (title of theTab as text)
 end tell
 end using terms from
 ]], quoteAppleScriptString(browser.appID))
@@ -328,10 +348,14 @@ tell application id %s
 
     set theWindow to front window
     set theTab to active tab of theWindow
+    set tabURL to ""
+    try
+        set tabURL to URL of theTab as text
+    end try
 
     return (id of theWindow as text) & "|" & ¬
            (id of theTab as text) & "|" & ¬
-           (title of theTab as text)
+           tabURL & (ASCII character 9) & (title of theTab as text)
 end tell
 ]], quoteAppleScriptString(browser.appID))
     end
@@ -354,6 +378,7 @@ local function parseBrowserTarget(browser, result)
     if not windowID or not tabID then
         return nil
     end
+    local url, parsedTitle = title:match("^([^\t]*)\t(.*)$")
 
     return {
         kind = "browserTab",
@@ -362,7 +387,8 @@ local function parseBrowserTarget(browser, result)
         windowID = windowID,
         tabID = tabID,
         tabIndex = tonumber(tabIndex),
-        title = title or "",
+        title = parsedTitle or title or "",
+        url = url,
     }
 end
 
@@ -376,7 +402,11 @@ tell application id %s
         set windowID to (id of theWindow as text)
         repeat with i from 1 to (count of tabs of theWindow)
             set theTab to tab i of theWindow
-            set end of tabRecords to windowID & "|" & (id of theTab as text) & "|" & (i as text) & "|" & (title of theTab as text)
+            set tabURL to ""
+            try
+                set tabURL to URL of theTab as text
+            end try
+            set end of tabRecords to windowID & "|" & (id of theTab as text) & "|" & (i as text) & "|" & tabURL & (ASCII character 9) & (title of theTab as text)
         end repeat
     end repeat
     set AppleScript's text item delimiters to linefeed
@@ -392,7 +422,11 @@ tell application id %s
     repeat with theWindow in windows
         set windowID to (id of theWindow as text)
         repeat with theTab in tabs of theWindow
-            set end of tabRecords to windowID & "|" & (id of theTab as text) & "|" & (title of theTab as text)
+            set tabURL to ""
+            try
+                set tabURL to URL of theTab as text
+            end try
+            set end of tabRecords to windowID & "|" & (id of theTab as text) & "|" & tabURL & (ASCII character 9) & (title of theTab as text)
         end repeat
     end repeat
     set AppleScript's text item delimiters to linefeed
@@ -453,6 +487,8 @@ local function refreshBrowserMetadata(browser, result)
         end
 
         if windowID and tabID then
+            local url, parsedTitle = title:match("^([^\t]*)\t(.*)$")
+            title = parsedTitle or title
             -- Tab IDs remain stable when a tab moves to another window. Keep
             -- windowID as target metadata for focusing, not as tab identity.
             local key = "browserTab:" .. browser.appID .. ":" .. tabID
@@ -461,6 +497,8 @@ local function refreshBrowserMetadata(browser, result)
             if targets then
                 for _, target in ipairs(targets) do
                     target.windowID = windowID
+                    if url ~= nil then target.url = url end
+                    if url ~= nil and prefetchFavicon then prefetchFavicon(target) end
                     if title and title ~= "" then
                         target.title = title
                         if browser.mode == "chrome" then
@@ -901,7 +939,88 @@ local function targetTitle(target)
     return targetAppName(target)
 end
 
+local function imageFromBytes(data)
+    if type(data) ~= "string" or #data == 0 or #data > 1024 * 1024 then return nil end
+    local ok, image = pcall(function()
+        return hs.image.imageFromURL("data:application/octet-stream;base64," .. hs.base64.encode(data))
+    end)
+    return ok and image or nil
+end
+
+prefetchFavicon = function(target)
+    if not faviconsEnabled or target.kind ~= "browserTab" or not target.browser or not target.url then return end
+    local url = target.url:match("^([^#]*)")
+    local origin = url:match("^(https?://[^/%?#]+)")
+    if not origin or origin:find("@", 1, true) then return end
+    local key = target.browser.appID .. "\n" .. url
+    local siteKey = target.browser.appID .. "\n" .. origin:lower()
+    local cached = faviconCache[key]
+    if cached and (cached.pending or cached.exact or hs.timer.secondsSinceEpoch() < cached.retryAt) then return end
+    if not cached then
+        if faviconCacheSize >= MAX_HISTORY then faviconCache = {}; siteFaviconCache = {}; faviconCacheSize = 0 end
+        faviconCacheSize = faviconCacheSize + 1
+    end
+    local entry = { pending = true, image = cached and cached.image }
+    faviconCache[key] = entry
+    local function finish(image, exact)
+        if faviconCache[key] ~= entry then return end
+        entry.pending = false
+        entry.image = image or entry.image
+        entry.exact = exact == true
+        if image and (exact or not siteFaviconCache[siteKey]) then
+            siteFaviconCache[siteKey] = image
+        end
+        entry.retryAt = hs.timer.secondsSinceEpoch() + 60
+        if image and cycle and faviconsEnabled then scheduleOverlayUpdate() end
+    end
+    local function fallback()
+        if faviconCache[key] ~= entry then return end
+        if not faviconsEnabled then finish(nil); return end
+        -- A sibling tab may already have the site's actual icon. Keep looking
+        -- for this page's own icon on a later retry instead of pinning a guess.
+        if siteFaviconCache[siteKey] then finish(nil); return end
+        hs.http.asyncGet(origin .. "/favicon.ico", nil, function(status, body)
+            finish(status == 200 and imageFromBytes(body) or nil)
+        end)
+    end
+    local profiles = {
+        ["company.thebrowser.dia"] = "/Dia/User Data/Default/Favicons",
+        ["com.google.Chrome"] = "/Google/Chrome/Default/Favicons",
+    }
+    local suffix = profiles[target.browser.appID]
+    local home = os.getenv("HOME")
+    local path = home and suffix and (home .. "/Library/Application Support" .. suffix)
+    if not path or not hs.fs or not hs.fs.attributes(path) then fallback(); return end
+    -- Chromium keeps this database exclusively locked. Immutable read-only mode
+    -- avoids interfering with the browser; a concurrent write can fail safely.
+    local uri = "file:" .. path:gsub("[^%w%-%._~/]", function(c) return string.format("%%%02X", c:byte()) end) .. "?immutable=1"
+    local hexURL = url:gsub(".", function(c) return string.format("%02X", c:byte()) end)
+    local sql = "SELECT hex(b.image_data) FROM icon_mapping m JOIN favicon_bitmaps b ON b.icon_id=m.icon_id WHERE m.page_url=CAST(X'"
+        .. hexURL .. "' AS TEXT) AND length(b.image_data) <= 1048576 ORDER BY abs(b.width - 64), b.width DESC LIMIT 1;\n"
+    local task = hs.task.new("/usr/bin/sqlite3", function(status, output)
+        local hex = status == 0 and type(output) == "string" and output:match("^([%x]+)")
+        local data = hex and hex:gsub("%x%x", function(pair) return string.char(tonumber(pair, 16)) end)
+        local image = imageFromBytes(data)
+        if image then finish(image, true) else fallback() end
+    end, { "-readonly", uri })
+    if not task then fallback(); return end
+    task:setInput(sql)
+    if not task:start() then fallback() end
+end
+
 local function targetIcon(target)
+    if faviconsEnabled and target.kind == "browserTab" and target.browser and target.url then
+        prefetchFavicon(target)
+        local url = target.url:match("^([^#]*)")
+        local cached = faviconCache[target.browser.appID .. "\n" .. url]
+        if cached and cached.exact and cached.image then return cached.image end
+        local origin = url:match("^(https?://[^/%?#]+)")
+        if origin and not origin:find("@", 1, true) then
+            local siteIcon = siteFaviconCache[target.browser.appID .. "\n" .. origin:lower()]
+            if siteIcon then return siteIcon end
+        end
+        if cached and cached.image then return cached.image end
+    end
     local appID = targetAppID(target)
     if not appID then
         return nil
@@ -1035,6 +1154,7 @@ local function overlayElements()
         local rowY = HEADER_HEIGHT + (offset * ROW_HEIGHT)
         local isSelected = index == selected
         local icon = targetIcon(target)
+        local titleFirst = tabTitleFirst and target.kind == "browserTab"
 
         table.insert(elements, {
             type = "rectangle",
@@ -1043,7 +1163,7 @@ local function overlayElements()
             roundedRectRadii = { xRadius = 7, yRadius = 7 },
             fillColor = isSelected
                 and { red = 0.20, green = 0.43, blue = 0.86, alpha = 0.92 }
-                or { white = 1.0, alpha = 0.04 },
+                or { white = 1.0, alpha = 0.26 },
             strokeColor = isSelected
                 and { red = 0.48, green = 0.67, blue = 1.0, alpha = 0.95 }
                 or { white = 1.0, alpha = 0.0 },
@@ -1075,7 +1195,7 @@ local function overlayElements()
         table.insert(elements, {
             type = "text",
             frame = { x = 100, y = rowY + 6, w = OVERLAY_WIDTH - 124, h = 18 },
-            text = targetAppName(target),
+            text = titleFirst and targetTitle(target) or targetAppName(target),
             textFont = "Helvetica Neue Medium",
             textSize = 12,
             textColor = { white = 1.0, alpha = isSelected and 0.98 or 0.75 },
@@ -1086,7 +1206,7 @@ local function overlayElements()
         table.insert(elements, {
             type = "text",
             frame = { x = 100, y = rowY + 24, w = OVERLAY_WIDTH - 124, h = 17 },
-            text = targetTitle(target),
+            text = titleFirst and targetAppName(target) or targetTitle(target),
             textFont = "Helvetica Neue",
             textSize = 11,
             textColor = { white = 1.0, alpha = isSelected and 0.88 or 0.55 },
@@ -1403,6 +1523,29 @@ function obj:addMenuItems(items)
         fn = toggleEnabled,
     })
     table.insert(items, {
+        title = "Browser tab favicons",
+        checked = faviconsEnabled,
+        fn = function()
+            faviconsEnabled = not faviconsEnabled
+            hs.settings.set(FAVICONS_SETTINGS_KEY, faviconsEnabled)
+            if faviconsEnabled then
+                for _, target in ipairs(history) do prefetchFavicon(target) end
+            end
+            if menuRefresh then menuRefresh() end
+            if cycle then scheduleOverlayUpdate() end
+        end,
+    })
+    table.insert(items, {
+        title = "Browser tab title first",
+        checked = tabTitleFirst,
+        fn = function()
+            tabTitleFirst = not tabTitleFirst
+            hs.settings.set(TAB_TITLE_FIRST_SETTINGS_KEY, tabTitleFirst)
+            if menuRefresh then menuRefresh() end
+            if cycle then scheduleOverlayUpdate() end
+        end,
+    })
+    table.insert(items, {
         title = "Unified ⌘Tab includes Chrome + Dia tabs + Spokenly",
         disabled = true,
     })
@@ -1416,6 +1559,8 @@ function obj:start()
 
     local persistedEnabled = hs.settings.get(SETTINGS_KEY)
     enabled = persistedEnabled == nil or persistedEnabled == true
+    faviconsEnabled = hs.settings.get(FAVICONS_SETTINGS_KEY) == true
+    tabTitleFirst = hs.settings.get(TAB_TITLE_FIRST_SETTINGS_KEY) ~= false
 
     windowFilter = hs.window.filter.new()
     windowFilter:subscribe(hs.window.filter.windowFocused, function(window)
@@ -1565,6 +1710,9 @@ end
 
 function obj:stop()
     browserMetadataReadGeneration = browserMetadataReadGeneration + 1
+    faviconCache = {}
+    siteFaviconCache = {}
+    faviconCacheSize = 0
     pendingBrowserMetadataReads = {}
     stopDiaTabObserver()
     if eventTap then

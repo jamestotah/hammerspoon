@@ -25,13 +25,19 @@ Other configurations can omit that menu; the Spoon works without it.
   If a cycle is active, it commits the highlighted target before returning.
 - `spoon.UnifiedCommandTab:isEnabled()` reports whether the custom switcher is
   enabled.
-- `spoon.UnifiedCommandTab:addMenuItems(items)` appends a toggle and status item
+- `spoon.UnifiedCommandTab:addMenuItems(items)` appends toggles and a status item
   to an existing Hammerspoon menu item list.
 - `spoon.UnifiedCommandTab:setMenuRefresh(callback)` registers a callback used
   to refresh a host configuration's menu after the toggle changes.
 
 The enabled state is stored in Hammerspoon settings under
 `unifiedCmdTab.enabled`, preserving the setting used by the original module.
+The optional browser-tab favicon toggle is off by default and persists under
+`unifiedCmdTab.favicons`. It prefetches page-specific icons from the browser's
+local default-profile cache, falls back to requesting `/favicon.ico` from the
+site origin, and finally uses the browser icon when unavailable.
+Browser tab titles appear above browser names by default; the menu can reverse
+the order, persisted under `unifiedCmdTab.tabTitleFirst`.
 The Spoon requires macOS Accessibility permission for keyboard/window events
 and may request Automation permission to read and select browser tabs.
 
