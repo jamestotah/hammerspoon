@@ -312,7 +312,6 @@ return function(modulePath, options)
                 appID = script:match('tell application id "([^"]+)"')
                     or (script:find("Application(", 1, true) and "company.thebrowser.dia") }
             f.counts.taskCreated = f.counts.taskCreated + 1
-            function task:setInput(input) self.input = input end
             function task:start()
                 assert(not self.started, "task started twice")
                 self.started = true
