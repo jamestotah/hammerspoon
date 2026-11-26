@@ -27,6 +27,13 @@ local TAB_TITLE_FIRST_SETTINGS_KEY = "unifiedCmdTab.tabTitleFirst"
 local POLL_INTERVAL = 0.50
 local BROWSER_METADATA_INTERVAL = 1.50
 local MAX_HISTORY = 100
+local EXITED_APP_SWEEP_INTERVAL = 1.50
+local FAVICON_PROFILE_REFRESH_INTERVAL = 300
+
+local FAVICON_PROFILE_ROOTS = {
+    ["company.thebrowser.dia"] = "/Dia/User Data",
+    ["com.google.Chrome"] = "/Google/Chrome",
+}
 
 local BROWSERS = {
     ["com.google.Chrome"] = {
@@ -66,7 +73,9 @@ local iconCache = {}
 local faviconCache = {}
 local siteFaviconCache = {}
 local faviconCacheSize = 0
+local faviconDatabaseCache = {}
 local faviconsEnabled = false
+local lastExitedAppSweepAt = 0
 local tabTitleFirst = true
 local overlayUpdateTimer = nil
 local overlayVisible = false
@@ -160,6 +169,25 @@ local function forgetTargets(predicate)
         lastObservedKey = nil
         lastObservedTarget = nil
     end
+end
+
+-- Short-lived system apps (for example Add Printer) can exit without a usable
+-- window-destroyed or terminated notification. Drop entries whose owning app
+-- is no longer running; one bundle-ID lookup per distinct app keeps this cheap.
+local function forgetExitedApplications()
+    if not hs.application.applicationsForBundleID then
+        return
+    end
+    local running = {}
+    forgetTargets(function(target)
+        if target.kind ~= "window" or type(target.bundleID) ~= "string" or not target.bundleID:find(".", 1, true) then
+            return false
+        end
+        if running[target.bundleID] == nil then
+            running[target.bundleID] = #hs.application.applicationsForBundleID(target.bundleID) > 0
+        end
+        return not running[target.bundleID]
+    end)
 end
 
 local function observe(target)
@@ -947,6 +975,40 @@ local function imageFromBytes(data)
     return ok and image or nil
 end
 
+-- Chromium browsers name profile directories "Default" and "Profile N"; Dia
+-- may have no "Default" profile at all.
+local function faviconDatabases(appID)
+    local now = hs.timer.secondsSinceEpoch()
+    local cached = faviconDatabaseCache[appID]
+    if cached and now < cached.refreshAt then return cached.paths end
+
+    local suffix = FAVICON_PROFILE_ROOTS[appID]
+    local home = os.getenv("HOME")
+    local paths = {}
+    if suffix and home and hs.fs and hs.fs.attributes then
+        local root = home .. "/Library/Application Support" .. suffix
+        local profiles = { { name = "Default", order = 0 } }
+        if hs.fs.dir then
+            profiles = {}
+            pcall(function()
+                for name in hs.fs.dir(root) do
+                    local order = name == "Default" and 0 or tonumber(name:match("^Profile (%d+)$"))
+                    if order then profiles[#profiles + 1] = { name = name, order = order } end
+                end
+            end)
+            table.sort(profiles, function(a, b) return a.order < b.order end)
+        end
+        for _, profile in ipairs(profiles) do
+            local path = root .. "/" .. profile.name .. "/Favicons"
+            if hs.fs.attributes(path) then paths[#paths + 1] = path end
+        end
+    end
+    if #paths > 0 then
+        faviconDatabaseCache[appID] = { paths = paths, refreshAt = now + FAVICON_PROFILE_REFRESH_INTERVAL }
+    end
+    return paths
+end
+
 prefetchFavicon = function(target)
     if not faviconsEnabled or target.kind ~= "browserTab" or not target.browser or not target.url then return end
     local url = target.url:match("^([^#]*)")
@@ -983,29 +1045,28 @@ prefetchFavicon = function(target)
             finish(status == 200 and imageFromBytes(body) or nil)
         end)
     end
-    local profiles = {
-        ["company.thebrowser.dia"] = "/Dia/User Data/Default/Favicons",
-        ["com.google.Chrome"] = "/Google/Chrome/Default/Favicons",
-    }
-    local suffix = profiles[target.browser.appID]
-    local home = os.getenv("HOME")
-    local path = home and suffix and (home .. "/Library/Application Support" .. suffix)
-    if not path or not hs.fs or not hs.fs.attributes(path) then fallback(); return end
-    -- Chromium keeps this database exclusively locked. Immutable read-only mode
-    -- avoids interfering with the browser; a concurrent write can fail safely.
-    local uri = "file:" .. path:gsub("[^%w%-%._~/]", function(c) return string.format("%%%02X", c:byte()) end) .. "?immutable=1"
+    local databases = faviconDatabases(target.browser.appID)
     local hexURL = url:gsub(".", function(c) return string.format("%02X", c:byte()) end)
     local sql = "SELECT hex(b.image_data) FROM icon_mapping m JOIN favicon_bitmaps b ON b.icon_id=m.icon_id WHERE m.page_url=CAST(X'"
         .. hexURL .. "' AS TEXT) AND length(b.image_data) <= 1048576 ORDER BY abs(b.width - 64), b.width DESC LIMIT 1;\n"
-    local task = hs.task.new("/usr/bin/sqlite3", function(status, output)
-        local hex = status == 0 and type(output) == "string" and output:match("^([%x]+)")
-        local data = hex and hex:gsub("%x%x", function(pair) return string.char(tonumber(pair, 16)) end)
-        local image = imageFromBytes(data)
-        if image then finish(image, true) else fallback() end
-    end, { "-readonly", uri })
-    if not task then fallback(); return end
-    task:setInput(sql)
-    if not task:start() then fallback() end
+    -- The tab's profile is unknown, so try each profile's cache in turn.
+    local function query(index)
+        local path = databases[index]
+        if not path or faviconCache[key] ~= entry then fallback(); return end
+        -- Chromium keeps this database exclusively locked. Immutable read-only mode
+        -- avoids interfering with the browser; a concurrent write can fail safely.
+        local uri = "file:" .. path:gsub("[^%w%-%._~/]", function(c) return string.format("%%%02X", c:byte()) end) .. "?immutable=1"
+        local task = hs.task.new("/usr/bin/sqlite3", function(status, output)
+            local hex = status == 0 and type(output) == "string" and output:match("^([%x]+)")
+            local data = hex and hex:gsub("%x%x", function(pair) return string.char(tonumber(pair, 16)) end)
+            local image = imageFromBytes(data)
+            if image then finish(image, true) else query(index + 1) end
+        end, { "-readonly", uri })
+        if not task then fallback(); return end
+        task:setInput(sql)
+        if not task:start() then fallback() end
+    end
+    query(1)
 end
 
 local function targetIcon(target)
@@ -1622,6 +1683,11 @@ function obj:start()
             return
         end
 
+        if hs.timer.secondsSinceEpoch() - lastExitedAppSweepAt >= EXITED_APP_SWEEP_INTERVAL then
+            lastExitedAppSweepAt = hs.timer.secondsSinceEpoch()
+            forgetExitedApplications()
+        end
+
         if hs.timer.secondsSinceEpoch() - lastBrowserMetadataReadAt >= BROWSER_METADATA_INTERVAL then
             refreshBrowserMetadataAsync()
         end
@@ -1713,6 +1779,8 @@ function obj:stop()
     faviconCache = {}
     siteFaviconCache = {}
     faviconCacheSize = 0
+    faviconDatabaseCache = {}
+    lastExitedAppSweepAt = 0
     pendingBrowserMetadataReads = {}
     stopDiaTabObserver()
     if eventTap then

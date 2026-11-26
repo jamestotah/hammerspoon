@@ -460,6 +460,53 @@ test("destroyed windows and terminated apps leave no history substitutes", funct
     eq(f:key("keyDown", { cmd = true }), false)
 end)
 
+test("windows of an app that exits without notifications leave history", function()
+    local f = windowHistory(2)
+    local printer = f:newApp("com.apple.print.add", "Add Printer")
+    f:observeWindow(f:newWindow(printer, 50, "Add Printer"))
+    f:observeWindow(f.windows[2])
+    printer.running = false
+    f.windows[50] = nil
+    f:advance(1.5)
+    press(f)
+    rowsEqual(f, { windowKey(2), windowKey(1) })
+end)
+
+test("favicons are read from every browser profile, not only Default", function()
+    local f = windowHistory(1)
+    f.hs.fs = {
+        attributes = function() return {} end,
+        dir = function()
+            local names, i = { ".", "Guest Profile", "Profile 2", "Profile 1" }, 0
+            return function() i = i + 1; return names[i] end
+        end,
+    }
+    f.hs.base64 = { encode = function(data) return data end }
+    f.hs.image.imageFromURL = function(url) return url:match(",image$") and "favicon" or nil end
+    f.hs.http = { asyncGet = function() error("cached profile icon should avoid the network") end }
+    f.switcher:addMenuItems({})[3].fn()
+    f:observeBrowser(DIA, "w1", "t1", "https://example.com/page\tPage")
+    local function sqliteTasks()
+        local found = {}
+        for _, task in ipairs(f.tasks) do
+            if task.script:find("/Favicons?immutable=1", 1, true) and not task.completed then table.insert(found, task) end
+        end
+        return found
+    end
+    local first = assert(sqliteTasks()[1], "no favicon lookup started")
+    assert(first.script:find("/Profile%201/Favicons", 1, true), "lowest profile number should be queried first")
+    f:complete(first, "")
+    local second = assert(sqliteTasks()[1], "a miss should fall through to the next profile")
+    assert(second.script:find("/Profile%202/Favicons", 1, true), "second profile was not queried")
+    f:complete(second, "696D616765\n")
+    press(f)
+    local found = false
+    for _, element in ipairs(f:canvas().elements) do
+        if element.type == "image" and element.image == "favicon" then found = true end
+    end
+    assert(found, "profile favicon was not rendered")
+end)
+
 test("Spokenly window and application observations share one identity", function()
     local f = windowHistory(1)
     local spokenly = f:newApp("app.spokenly", "Spokenly")
