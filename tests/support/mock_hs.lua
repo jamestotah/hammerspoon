@@ -232,8 +232,30 @@ return function(modulePath, options)
         self:mouse("mouseUp", targetKey)
     end
 
+    function f:closeWindowAX(window, element)
+        local delivered = false
+        for _, observer in ipairs(self.observers) do
+            if observer.running and observer.pid == window.owner:pid() then
+                for _, watch in ipairs(observer.watches) do
+                    if watch.notification == "AXUIElementDestroyed" then
+                        observer.callbackFn(observer, element or window.ax, "AXUIElementDestroyed", {})
+                        delivered = true
+                    end
+                end
+            end
+        end
+        return delivered
+    end
+
     function f:notifyDia(notification)
-        local observer = assert(self.observers[#self.observers], "no Dia observer")
+        local observer
+        for i = #self.observers, 1, -1 do
+            for _, watch in ipairs(self.observers[i].watches) do
+                if watch.notification ~= "AXUIElementDestroyed" then observer = self.observers[i] end
+            end
+            if observer then break end
+        end
+        assert(observer, "no Dia observer")
         local element = notification == "AXWindowCreated" and self.diaApplicationAX or self.diaTabList
         if observer.running then
             for _, watch in ipairs(observer.watches) do
@@ -390,7 +412,13 @@ return function(modulePath, options)
             end,
         },
         axuielement = {
-            windowElement = function() return f.diaWindowAX end,
+            windowElement = function(window)
+                if not window or not window.owner or window.owner:bundleID() == "company.thebrowser.dia" then
+                    return f.diaWindowAX
+                end
+                window.ax = window.ax or axNode("AXWindow")
+                return window.ax
+            end,
             applicationElement = function() return f.diaApplicationAX end,
             observer = { new = function(pid)
                 local observer = watcher(f.observers)

@@ -70,6 +70,8 @@ local faviconCacheSize = 0
 local faviconsEnabled = false
 local lastVanishedWindowSweepAt = 0
 local vanishedWindowStrikes = {}
+local windowElements = {}
+local windowCloseObservers = {}
 local tabTitleFirst = true
 local overlayUpdateTimer = nil
 local overlayVisible = false
@@ -188,6 +190,13 @@ local function forgetVanishedWindows()
         return
     end
 
+    for pid, observer in pairs(windowCloseObservers) do
+        if not runningPIDs[pid] then
+            pcall(function() observer:stop() end)
+            windowCloseObservers[pid] = nil
+        end
+    end
+
     local onScreen = nil
     local strikes = {}
     forgetTargets(function(target)
@@ -212,6 +221,67 @@ local function forgetVanishedWindows()
         return vanishedWindowStrikes[target.key] == true
     end)
     vanishedWindowStrikes = strikes
+
+    local tracked = {}
+    for _, target in ipairs(history) do tracked[target.key] = true end
+    if lastObservedTarget then tracked[lastObservedTarget.key] = true end
+    for key in pairs(windowElements) do
+        if not tracked[key] then windowElements[key] = nil end
+    end
+end
+
+local function forgetClosedWindow(pid, element)
+    local closed = {}
+    for key, stored in pairs(windowElements) do
+        if stored.pid == pid and stored.element == element then
+            closed[key] = true
+        end
+    end
+    if not next(closed) then
+        return
+    end
+    forgetTargets(function(target)
+        return closed[target.key] == true
+    end)
+    for key in pairs(closed) do windowElements[key] = nil end
+end
+
+-- Hammerspoon's per-window destroyed watcher does not fire on current macOS,
+-- but an app-level AXUIElementDestroyed observer does, and it reports the
+-- window's own element. Matching that element removes exactly the window that
+-- closed while its app keeps running.
+local function watchWindowClose(window, target)
+    if not window or not target or target.kind ~= "window" or not target.pid
+        or not hs.axuielement or not hs.axuielement.observer then
+        return
+    end
+    if not windowElements[target.key] then
+        local ok, element = pcall(hs.axuielement.windowElement, window)
+        if ok and element then windowElements[target.key] = { pid = target.pid, element = element } end
+    end
+    if windowCloseObservers[target.pid] then
+        return
+    end
+
+    local pid = target.pid
+    local ok, observer = pcall(hs.axuielement.observer.new, pid)
+    if not ok or not observer then
+        return
+    end
+    local appOK, appElement = pcall(hs.axuielement.applicationElement, window:application())
+    if not appOK or not appElement then
+        return
+    end
+    observer:callback(function(_, element)
+        if eventTap and enabled then forgetClosedWindow(pid, element) end
+    end)
+    local started = pcall(function()
+        observer:addWatcher(appElement, "AXUIElementDestroyed")
+        observer:start()
+    end)
+    if started then
+        windowCloseObservers[pid] = observer
+    end
 end
 
 local function observe(target)
@@ -1624,7 +1694,9 @@ function obj:start()
         if app and app:bundleID() == BROWSERS["company.thebrowser.dia"].appID then
             ensureDiaTabObserver()
         end
-        observe(targetForWindow(window))
+        local target = targetForWindow(window)
+        observe(target)
+        watchWindowClose(window, target)
     end)
     windowFilter:subscribe(hs.window.filter.windowDestroyed, function(window)
         local app = window and window:application()
@@ -1773,6 +1845,11 @@ function obj:stop()
     faviconCacheSize = 0
     lastVanishedWindowSweepAt = 0
     vanishedWindowStrikes = {}
+    for _, observer in pairs(windowCloseObservers) do
+        pcall(function() observer:stop() end)
+    end
+    windowCloseObservers = {}
+    windowElements = {}
     pendingBrowserMetadataReads = {}
     stopDiaTabObserver()
     if eventTap then

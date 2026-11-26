@@ -476,6 +476,20 @@ test("windows of an app that exits without notifications leave history", functio
     rowsEqual(f, { windowKey(2), windowKey(1) })
 end)
 
+test("a closed window leaves history at once while its app keeps running", function()
+    local f = windowHistory(3)
+    local closing = f.windows[2]
+    f.windows[2] = nil
+    assert(f:closeWindowAX(closing), "no close observer for the window's app")
+    press(f)
+    rowsEqual(f, { windowKey(3), windowKey(1) })
+    release(f)
+    -- Destroyed child elements (buttons, sheets) must not remove other windows.
+    assert(f:closeWindowAX(f.windows[1], { role = "AXButton" }))
+    press(f)
+    rowsEqual(f, { windowKey(3), windowKey(1) })
+end)
+
 test("failed app lookups never clear windows that are still open", function()
     local f = windowHistory(3)
     local running = f.hs.application.runningApplications
