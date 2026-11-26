@@ -460,6 +460,40 @@ test("destroyed windows and terminated apps leave no history substitutes", funct
     eq(f:key("keyDown", { cmd = true }), false)
 end)
 
+test("windows of an app that exits without notifications leave history", function()
+    local f = windowHistory(2)
+    local printer = f:newApp("com.apple.print.add", "Add Printer", 5150)
+    f:observeWindow(f:newWindow(printer, 50, "Add Printer"))
+    f:observeWindow(f.windows[2])
+    printer.running = false
+    f.windows[50] = nil
+    f:advance(2)
+    press(f)
+    rowsEqual(f, { windowKey(2), windowKey(50, "com.apple.print.add"), windowKey(1) })
+    release(f)
+    f:advance(2)
+    press(f)
+    rowsEqual(f, { windowKey(2), windowKey(1) })
+end)
+
+test("failed app lookups never clear windows that are still open", function()
+    local f = windowHistory(3)
+    local running = f.hs.application.runningApplications
+    f.hs.application.runningApplications = function() return {} end
+    f.hs.application.applicationsForBundleID = function() return {} end
+    f:advance(10)
+    press(f)
+    rowsEqual(f, { windowKey(3), windowKey(2), windowKey(1) })
+    release(f)
+    -- Process lookup misses the owner, but the window server still lists it.
+    f.hs.application.runningApplications = function() return { f:newApp("other.app", "Other", 7) } end
+    f:advance(10)
+    press(f)
+    rowsEqual(f, { windowKey(3), windowKey(2), windowKey(1) })
+    release(f)
+    f.hs.application.runningApplications = running
+end)
+
 test("Spokenly window and application observations share one identity", function()
     local f = windowHistory(1)
     local spokenly = f:newApp("app.spokenly", "Spokenly")

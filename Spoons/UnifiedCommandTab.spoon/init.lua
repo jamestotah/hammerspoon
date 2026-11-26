@@ -27,6 +27,7 @@ local TAB_TITLE_FIRST_SETTINGS_KEY = "unifiedCmdTab.tabTitleFirst"
 local POLL_INTERVAL = 0.50
 local BROWSER_METADATA_INTERVAL = 1.50
 local MAX_HISTORY = 100
+local VANISHED_WINDOW_SWEEP_INTERVAL = 2.0
 
 local BROWSERS = {
     ["com.google.Chrome"] = {
@@ -67,6 +68,8 @@ local faviconCache = {}
 local siteFaviconCache = {}
 local faviconCacheSize = 0
 local faviconsEnabled = false
+local lastVanishedWindowSweepAt = 0
+local vanishedWindowStrikes = {}
 local tabTitleFirst = true
 local overlayUpdateTimer = nil
 local overlayVisible = false
@@ -160,6 +163,55 @@ local function forgetTargets(predicate)
         lastObservedKey = nil
         lastObservedTarget = nil
     end
+end
+
+-- Short-lived system apps (for example Add Printer) can exit without a
+-- window-destroyed or terminated notification. A single empty app lookup is
+-- not proof of exit, so a window entry is dropped only when its owning process
+-- is gone and the window server no longer lists the window, on two
+-- consecutive sweeps.
+local function forgetVanishedWindows()
+    if not hs.application.runningApplications then
+        return
+    end
+    local runningPIDs = {}
+    local runningCount = 0
+    for _, app in ipairs(hs.application.runningApplications()) do
+        local pid = app:pid()
+        if pid then
+            runningPIDs[pid] = true
+            runningCount = runningCount + 1
+        end
+    end
+    if runningCount == 0 then
+        vanishedWindowStrikes = {}
+        return
+    end
+
+    local onScreen = nil
+    local strikes = {}
+    forgetTargets(function(target)
+        if target.kind ~= "window" or not target.pid or runningPIDs[target.pid] then
+            return false
+        end
+        if onScreen == nil then
+            local ok, windows = pcall(function() return hs.window.list and hs.window.list(true) end)
+            onScreen = false
+            if ok and type(windows) == "table" then
+                onScreen = {}
+                for _, info in ipairs(windows) do
+                    if info.kCGWindowNumber then onScreen[info.kCGWindowNumber] = true end
+                end
+            end
+        end
+        -- Minimized and other-Space windows are not on screen; ask AX as well.
+        if not onScreen or onScreen[target.windowID] or hs.window.get(target.windowID) then
+            return false
+        end
+        strikes[target.key] = true
+        return vanishedWindowStrikes[target.key] == true
+    end)
+    vanishedWindowStrikes = strikes
 end
 
 local function observe(target)
@@ -836,6 +888,7 @@ local function targetForWindow(window)
         key = "window:" .. tostring(bundleID) .. ":" .. tostring(windowID),
         windowID = windowID,
         bundleID = bundleID,
+        pid = app.pid and app:pid() or nil,
         appName = app:name(),
         title = window:title(),
     }
@@ -1622,6 +1675,11 @@ function obj:start()
             return
         end
 
+        if hs.timer.secondsSinceEpoch() - lastVanishedWindowSweepAt >= VANISHED_WINDOW_SWEEP_INTERVAL then
+            lastVanishedWindowSweepAt = hs.timer.secondsSinceEpoch()
+            forgetVanishedWindows()
+        end
+
         if hs.timer.secondsSinceEpoch() - lastBrowserMetadataReadAt >= BROWSER_METADATA_INTERVAL then
             refreshBrowserMetadataAsync()
         end
@@ -1713,6 +1771,8 @@ function obj:stop()
     faviconCache = {}
     siteFaviconCache = {}
     faviconCacheSize = 0
+    lastVanishedWindowSweepAt = 0
+    vanishedWindowStrikes = {}
     pendingBrowserMetadataReads = {}
     stopDiaTabObserver()
     if eventTap then

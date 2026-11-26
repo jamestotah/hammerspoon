@@ -276,6 +276,13 @@ return function(modulePath, options)
                 end
                 return apps
             end,
+            runningApplications = function()
+                local apps = {}
+                for _, app in ipairs(f.appInstances) do
+                    if app.running then apps[#apps + 1] = app end
+                end
+                return apps
+            end,
             frontmostApplication = function() return f.frontmostApp end,
             watcher = {
                 activated = "activated", launched = "launched", terminated = "terminated",
@@ -284,6 +291,11 @@ return function(modulePath, options)
         },
         window = {
             get = function(id) return f.windows[id] end,
+            list = function()
+                local windows = {}
+                for id in pairs(f.windows) do windows[#windows + 1] = { kCGWindowNumber = id } end
+                return windows
+            end,
             frontmostWindow = function() return f.frontmostWindow end,
             filter = {
                 windowFocused = "focused", windowDestroyed = "destroyed", windowNotVisible = "hidden",
